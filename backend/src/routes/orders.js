@@ -67,6 +67,14 @@ router.get('/fee-preview', (req, res) => {
   res.json({ success: true, total: amount, ...info });
 });
 
+router.get('/:id/payment-link', async (req, res) => {
+  const order = await db.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
+  if (!order.rows.length) return res.status(404).json({ error: 'Order not found' });
+  const { seller_wallet, total_amount } = order.rows[0];
+  const link = generatePaymentLink({ destination: seller_wallet, amount: total_amount, assetCode: 'XLM', assetIssuer: '' });
+  res.json({ payment_link: link });
+});
+
 /**
  * @swagger
  * tags:
@@ -783,5 +791,4 @@ router.get('/:id/receipt', auth, async (req, res) => {
 });
 
 module.exports = router;
-
 
