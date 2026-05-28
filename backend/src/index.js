@@ -3,6 +3,7 @@ const app = require('./app');
 const logger = require('./logger');
 const cron = require('node-cron');
 const { startSubscriptionJob } = require('./jobs/processSubscriptions');
+const { startProductViewsAggJob } = require('./jobs/aggregateProductViews');
 const { startFreshnessJob } = require('./jobs/processFreshnessAlerts');
 const { startContractMonitor } = require('./jobs/contractMonitor');
 const { startPushSubscriptionCleanup } = require('./jobs/cleanupPushSubscriptions');
@@ -12,6 +13,7 @@ const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   logger.info(`Backend running on http://localhost:${PORT}`);
   startSubscriptionJob();
+  startProductViewsAggJob();
   startFreshnessJob();
   startContractMonitor();
   startPushSubscriptionCleanup();
