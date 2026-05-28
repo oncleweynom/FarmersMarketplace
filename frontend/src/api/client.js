@@ -1,4 +1,4 @@
-const BASE = '/api';
+const BASE = '/api/v1';
 
 let accessToken = null;
 let loadingCallback = null;
