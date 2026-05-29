@@ -653,5 +653,29 @@ if (USE_POSTGRES) {
     process.exit(1);
   });
 
-  module.exports = db;
+// Migrate users role CHECK constraint to include 'admin' if needed
+const usersRow = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").get();
+if (usersRow && !usersRow.sql.includes("'admin'")) {
+  db.pragma('foreign_keys = OFF');
+  db.exec(`
+    CREATE TABLE users_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      email TEXT UNIQUE NOT NULL,
+      password TEXT NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('farmer', 'buyer', 'admin')),
+      stellar_public_key TEXT,
+      stellar_secret_key TEXT,
+      farm_lat REAL,
+      farm_lng REAL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    INSERT INTO users_new (id, name, email, password, role, stellar_public_key, stellar_secret_key, created_at)
+      SELECT id, name, email, password, role, stellar_public_key, stellar_secret_key, created_at FROM users;
+    DROP TABLE users;
+    ALTER TABLE users_new RENAME TO users;
+  `);
+  db.pragma('foreign_keys = ON');
 }
+
+module.exports = db;

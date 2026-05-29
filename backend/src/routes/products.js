@@ -170,54 +170,27 @@ router.get('/', async (req, res) => {
   res.json(payload);
 });
 
-// GET /api/products/search
-router.get('/search', async (req, res) => {
-  const q = (req.query.q || '').trim();
-  if (!q) {
-    const { rows } = await db.query(
-      `SELECT p.*, u.name as farmer_name FROM products p JOIN users u ON p.farmer_id = u.id ORDER BY p.created_at DESC LIMIT 100`
-    );
-    return res.json({ success: true, data: rows });
+// GET /api/products/:id
+router.get('/:id', (req, res) => {
+  const product = db.prepare(`
+    SELECT p.*, u.name AS farmer_name, u.stellar_public_key AS farmer_wallet
+    FROM products p
+    JOIN users u ON p.farmer_id = u.id
+    WHERE p.id = ?
+  `).get(req.params.id);
+  if (!product) return res.status(404).json({ error: 'Product not found' });
+
+  // #616 — hide product if not yet available per scheduling
+  const schedule = db.prepare('SELECT available_from FROM product_scheduling WHERE product_id = ?')
+    .get(product.id);
+  if (schedule && new Date(schedule.available_from) > new Date()) {
+    return res.status(404).json({
+      error: 'Product not yet available',
+      available_from: schedule.available_from,
+    });
   }
-  const like = `%${q}%`;
-  const { rows } = await db.query(
-    `SELECT p.*, u.name as farmer_name FROM products p JOIN users u ON p.farmer_id = u.id
-     WHERE p.name ${db.isPostgres ? 'ILIKE' : 'LIKE'} $1 OR p.description ${db.isPostgres ? 'ILIKE' : 'LIKE'} $2
-     ORDER BY p.created_at DESC LIMIT 100`,
-    [like, like]
-  );
-  res.json({ success: true, data: rows });
-});
 
-// GET /api/products/categories
-router.get('/categories', async (_req, res) => {
-  const { rows } = await db.query(
-    'SELECT DISTINCT category FROM products WHERE category IS NOT NULL ORDER BY category'
-  );
-  res.json({ success: true, data: rows.map((r) => r.category) });
-});
-
-// GET /api/products/mine/list
-router.get('/mine/list', auth, async (req, res) => {
-  if (req.user.role !== 'farmer') return err(res, 403, 'Farmers only', 'forbidden');
-  const { rows } = await db.query(
-    'SELECT * FROM products WHERE farmer_id = $1 ORDER BY created_at DESC',
-    [req.user.id]
-  );
-  res.json({ success: true, data: rows });
-});
-
-// POST /api/products/upload-image
-router.post('/upload-image', auth, (req, res) => {
-  if (req.user.role !== 'farmer') return err(res, 403, 'Only farmers can upload images', 'forbidden');
-  upload.single('image')(req, res, (uploadErr) => {
-    if (uploadErr) {
-      if (uploadErr.code === 'LIMIT_FILE_SIZE') return err(res, 400, 'Image must be 5 MB or smaller', 'file_too_large');
-      return err(res, 400, 'Upload failed', 'upload_error');
-    }
-    if (!req.file) return err(res, 400, 'No image file provided', 'no_file');
-    res.json({ success: true, imageUrl: `/uploads/${req.file.filename}` });
-  });
+  res.json(product);
 });
 
 /**
@@ -360,152 +333,59 @@ router.get('/mine/list', auth, (req, res) => {
       'SELECT id FROM harvest_batches WHERE id = $1 AND farmer_id = $2',
       [batchId, req.user.id]
     );
-    if (!bRows[0]) return err(res, 400, 'Invalid batch_id or not your batch', 'invalid_batch');
   }
 
-  const { rows } = await db.query(
-    `INSERT INTO products (farmer_id, name, description, category, price, quantity, unit, image_url,
-      low_stock_threshold, nutrition, pricing_type, min_weight, max_weight, batch_id,
-      is_preorder, preorder_delivery_date, allergens, allowed_regions, available_from, available_until)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING id`,
-    [
-      req.user.id, safeName, safeDescription, safeCategory, price, quantity, safeUnit, safeImageUrl,
-      parseInt(req.body.low_stock_threshold, 10) || 5, nutrition ? JSON.stringify(nutrition) : null,
-      pricingType, minWeight, maxWeight, batchId,
-      preorder.isPreorder ? 1 : 0, preorder.preorderDeliveryDate,
-      allergenResult.allergens, parseAllowedRegions(req.body.allowed_regions),
-      req.body.available_from || null, req.body.available_until || null,
-    ]
-  );
-  const productId = rows[0].id;
-  await db.query('INSERT INTO price_history (product_id, price) VALUES ($1, $2)', [productId, price]);
-  await cache.del('products:{}');
-  res.json({ success: true, id: productId, message: 'Product listed' });
+  res.json({ id: productId, message: 'Product listed' });
 });
 
-/**
- * @swagger
- * /api/products/{id}:
- *   patch:
- *     summary: Update a product listing (farmer only)
- *     tags: [Products]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema: { type: integer }
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               name: { type: string }
- *               description: { type: string }
- *               price: { type: number, description: Price in XLM, must be positive }
- *               quantity:
- *                 type: integer
- *                 minimum: 0
- *                 description: >
- *                   Stock quantity. Must be a non-negative integer.
- *                   Setting quantity to 0 hides the product from public listings
- *                   (GET /api/products) but the product remains visible to the
- *                   farmer via GET /api/products/mine/list.
- *               unit: { type: string }
- *               category: { type: string }
- *               low_stock_threshold: { type: integer, minimum: 0 }
- *     responses:
- *       200:
- *         description: Product updated
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success: { type: boolean }
- *                 message: { type: string }
- *       400:
- *         description: Validation error
- *         content:
- *           application/json:
- *             schema: { $ref: '#/components/schemas/Error' }
- *       403:
- *         description: Only farmers can edit products
- *         content:
- *           application/json:
- *             schema: { $ref: '#/components/schemas/Error' }
- *       404:
- *         description: Not found or not yours
- *         content:
- *           application/json:
- *             schema: { $ref: '#/components/schemas/Error' }
- */
-// PATCH /api/products/bulk-price
-router.patch('/bulk-price', auth, async (req, res) => {
-  if (req.user.role !== 'farmer') return err(res, 403, 'Farmers only', 'forbidden');
+// PUT /api/products/:id/schedule - farmer sets or updates pre-order availability
+router.put('/:id/schedule', auth, (req, res) => {
+  if (req.user.role !== 'farmer')
+    return res.status(403).json({ error: 'Only farmers can schedule products' });
 
-  const { updates, adjustment_percent } = req.body;
-  if (!Array.isArray(updates) || updates.length === 0) {
-    return err(res, 400, 'updates must be a non-empty array of { id, price }', 'validation_error');
-  }
-  for (let i = 0; i < updates.length; i++) {
-    const u = updates[i];
-    if (!u.id || typeof u.id !== 'number') return err(res, 400, `updates[${i}].id must be a number`, 'validation_error');
-    if (adjustment_percent == null && (typeof u.price !== 'number' || u.price <= 0)) {
-      return err(res, 400, `updates[${i}].price must be a positive number`, 'validation_error');
-    }
-  }
-  if (adjustment_percent != null && typeof adjustment_percent !== 'number') {
-    return err(res, 400, 'adjustment_percent must be a number', 'validation_error');
-  }
+  const product = db.prepare('SELECT id FROM products WHERE id = ? AND farmer_id = ?')
+    .get(req.params.id, req.user.id);
+  if (!product) return res.status(404).json({ error: 'Product not found or not yours' });
 
-  const ids = updates.map((u) => u.id);
-  const placeholders = ids.map((_, i) => `$${i + 2}`).join(', ');
-  const { rows: owned } = await db.query(
-    `SELECT id, price FROM products WHERE farmer_id = $1 AND id IN (${placeholders})`,
-    [req.user.id, ...ids]
-  );
-  const ownedIds = new Set(owned.map((r) => Number(r.id)));
+  const { available_from } = req.body;
+  if (!available_from)
+    return res.status(400).json({ error: 'available_from required (ISO 8601 datetime)' });
 
-  const updated = [];
-  const failed = [];
-  for (const u of updates) {
-    if (!ownedIds.has(u.id)) { failed.push({ id: u.id, reason: 'Not found or not owned by you' }); continue; }
-    let newPrice = adjustment_percent != null
-      ? parseFloat((owned.find((r) => Number(r.id) === u.id).price * (1 + adjustment_percent / 100)).toFixed(7))
-      : u.price;
-    if (newPrice <= 0) { failed.push({ id: u.id, reason: 'Computed price must be positive' }); continue; }
-    await db.query('UPDATE products SET price = $1 WHERE id = $2', [newPrice, u.id]);
-    updated.push({ id: u.id, price: newPrice });
-  }
-  res.json({ success: true, data: { updated, failed } });
+  db.prepare(`
+    INSERT INTO product_scheduling (product_id, available_from)
+    VALUES (?, ?)
+    ON CONFLICT(product_id) DO UPDATE SET available_from = excluded.available_from
+  `).run(req.params.id, available_from);
+
+  res.json({ message: 'Schedule updated', product_id: req.params.id, available_from });
 });
 
-// GET /api/products/:id
-router.get('/:id', async (req, res) => {
-  const { rows } = await db.query(
-    `SELECT p.*, u.name as farmer_name, u.bio as farmer_bio, u.location as farmer_location,
-            u.avatar_url as farmer_avatar, u.stellar_public_key as farmer_wallet,
-            hb.batch_code as harvest_batch_code, hb.harvest_date as harvest_batch_date, hb.notes as harvest_batch_notes,
-            ROUND(AVG(r.rating)${db.isPostgres ? '::numeric' : ''}, 1) as avg_rating,
-            COUNT(r.id) as review_count
-     FROM products p
-     JOIN users u ON p.farmer_id = u.id
-     LEFT JOIN reviews r ON r.product_id = p.id
-     LEFT JOIN harvest_batches hb ON hb.id = p.batch_id
-     WHERE p.id = $1
-     GROUP BY p.id, u.name, u.bio, u.location, u.avatar_url, u.stellar_public_key,
-              hb.batch_code, hb.harvest_date, hb.notes`,
-    [req.params.id]
-  );
-  if (!rows[0]) return err(res, 404, 'Product not found', 'not_found');
-  const product = rows[0];
-  product.image_url = rewriteImageUrl(product.image_url);
-  product.farmer_avatar = rewriteImageUrl(product.farmer_avatar);
-  res.json({ success: true, data: product });
+// DELETE /api/products/:id/schedule - farmer removes scheduling (makes immediately available)
+router.delete('/:id/schedule', auth, (req, res) => {
+  if (req.user.role !== 'farmer')
+    return res.status(403).json({ error: 'Farmers only' });
+
+  const product = db.prepare('SELECT id FROM products WHERE id = ? AND farmer_id = ?')
+    .get(req.params.id, req.user.id);
+  if (!product) return res.status(404).json({ error: 'Product not found or not yours' });
+
+  db.prepare('DELETE FROM product_scheduling WHERE product_id = ?').run(req.params.id);
+  res.json({ message: 'Schedule removed, product is now immediately available' });
+});
+
+// GET /api/products/mine/list - farmer's own products (includes unscheduled ones)
+router.get('/mine/list', auth, (req, res) => {
+  if (req.user.role !== 'farmer')
+    return res.status(403).json({ error: 'Farmers only' });
+
+  const products = db.prepare(`
+    SELECT p.*, ps.available_from
+    FROM products p
+    LEFT JOIN product_scheduling ps ON p.id = ps.product_id
+    WHERE p.farmer_id = ?
+    ORDER BY p.created_at DESC
+  `).all(req.user.id);
+  res.json(products);
 });
 
 // PATCH /api/products/:id
