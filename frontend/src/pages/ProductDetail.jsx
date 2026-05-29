@@ -60,7 +60,8 @@ const s = {
   empty:      { color: '#aaa', fontSize: 14, textAlign: 'center', padding: '24px 0' },
   badge:      { display: 'inline-block', fontSize: 11, borderRadius: 4, padding: '2px 7px' },
   select:     { width: '100%', padding: '9px 12px', border: '1px solid #ddd', borderRadius: 8, fontSize: 14, marginBottom: 12 },
-  galleryMain:   { width: '100%', maxHeight: 320, objectFit: 'cover', borderRadius: 10, marginBottom: 10, display: 'block' },
+  galleryMain:   { width: '100%', maxHeight: 320, objectFit: 'cover', borderRadius: 10, marginBottom: 10, display: 'block', transition: 'transform 0.3s ease' },
+  galleryMainContainer: { overflow: 'hidden', borderRadius: 10, marginBottom: 10, cursor: 'zoom-in' },
   thumbRow:      { display: 'flex', gap: 8, marginBottom: 16, overflowX: 'auto' },
   thumb:         { width: 64, height: 64, objectFit: 'cover', borderRadius: 6, cursor: 'pointer', border: '2px solid transparent', flexShrink: 0 },
   thumbActive:   { border: '2px solid #2d6a4f' },
@@ -568,7 +569,11 @@ export default function ProductDetail() {
         {images.length > 0 ? (
           <div style={{ marginBottom: 16 }}>
             <div style={{ position: 'relative' }}>
-              <img src={images[safeActiveImg].url} alt={`${product.name} photo ${safeActiveImg + 1}`} style={s.galleryMain} />
+              <div style={s.galleryMainContainer}
+                onMouseEnter={e => e.currentTarget.querySelector('img').style.transform = 'scale(1.35)'}
+                onMouseLeave={e => e.currentTarget.querySelector('img').style.transform = ''}>
+                <img src={images[safeActiveImg].url} alt={`${product.name} photo ${safeActiveImg + 1}`} style={s.galleryMain} />
+              </div>
               {images.length > 1 && (
                 <div style={{ position: 'absolute', top: '50%', transform: 'translateY(-50%)', width: '100%', display: 'flex', justifyContent: 'space-between', padding: '0 8px', boxSizing: 'border-box', pointerEvents: 'none' }}>
                   <button style={{ ...s.navBtn, pointerEvents: 'all' }} onClick={() => setActiveImg(i => (i - 1 + images.length) % images.length)} aria-label={t('productDetail.previousImage')}>‹</button>

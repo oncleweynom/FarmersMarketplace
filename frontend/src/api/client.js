@@ -217,6 +217,7 @@ export const api = {
   getPathEstimate: (params) => request(`/wallet/path-estimate${toQs(params)}`),
   deleteAccount: (force) => request(`/auth/account${force ? '?force=true' : ''}`, { method: 'DELETE' }),
   getWalletStreamUrl: () => `/api/wallet/stream?token=${encodeURIComponent(accessToken || '')}`,
+  getOrdersStreamUrl: () => `/api/orders/stream?token=${encodeURIComponent(accessToken || '')}`,
 
   getFarmer: (id) => request(`/farmers/${id}`),
   updateFarmerProfile: (body) => request('/farmers/me', { method: 'PATCH', body }),

@@ -657,6 +657,9 @@ router.patch('/:id/status', auth, validate.updateOrderStatus, async (req, res) =
 
   await db.query('UPDATE orders SET status = $1 WHERE id = $2', [status, order.id]);
 
+  // Broadcast real-time status update to SSE clients
+  broadcastOrderUpdate(order.buyer_id, order.id, status);
+
   sendStatusUpdateEmail({
     order,
     product: { name: order.product_name, unit: order.unit },
@@ -760,5 +763,51 @@ router.get('/:id/receipt', auth, async (req, res) => {
   res.send(lines);
 });
 
+// SSE clients map: userId -> Set of response objects
+const orderClients = new Map();
+
+function broadcastOrderUpdate(userId, orderId, status) {
+  const clients = orderClients.get(userId);
+  if (!clients) return;
+  const payload = `data: ${JSON.stringify({ id: orderId, status })}\n\n`;
+  for (const res of clients) {
+    try { res.write(payload); } catch { /* ignore */ }
+  }
+}
+
+// GET /api/orders/stream — SSE endpoint for real-time order status updates
+// Auth via ?token= query param (EventSource cannot set headers)
+const jwt = require('jsonwebtoken');
+router.get('/stream', async (req, res) => {
+  const token = req.query.token;
+  if (!token) return res.status(401).json({ error: 'No token' });
+  let user;
+  try {
+    user = jwt.verify(token, process.env.JWT_SECRET);
+  } catch {
+    return res.status(401).json({ error: 'Invalid token' });
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  if (!orderClients.has(user.id)) orderClients.set(user.id, new Set());
+  orderClients.get(user.id).add(res);
+
+  const heartbeat = setInterval(() => { try { res.write(': ping\n\n'); } catch { /* ignore */ } }, 30000);
+
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    const clients = orderClients.get(user.id);
+    if (clients) {
+      clients.delete(res);
+      if (clients.size === 0) orderClients.delete(user.id);
+    }
+  });
+});
+
 module.exports = router;
+module.exports.broadcastOrderUpdate = broadcastOrderUpdate;
 

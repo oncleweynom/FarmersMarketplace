@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Helmet } from 'react-helmet-async';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
@@ -97,6 +97,10 @@ export default function Orders() {
   const [returnReason, setReturnReason] = useState('');
   const [returnLoading, setReturnLoading] = useState(false);
   const [returnMsg, setReturnMsg] = useState({});
+  const [sseError, setSseError] = useState(false);
+  const esRef = useRef(null);
+  const reconnectTimerRef = useRef(null);
+  const retriedRef = useRef(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -117,6 +121,36 @@ export default function Orders() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // SSE: real-time order status updates
+  useEffect(() => {
+    function connect() {
+      const url = api.getOrdersStreamUrl();
+      const es = new EventSource(url);
+      esRef.current = es;
+      es.onmessage = (e) => {
+        try {
+          const { id, status } = JSON.parse(e.data);
+          setAllOrders(prev => prev.map(o => o.id === id ? { ...o, status } : o));
+        } catch { /* ignore malformed */ }
+      };
+      es.onerror = () => {
+        es.close();
+        esRef.current = null;
+        if (!retriedRef.current) {
+          retriedRef.current = true;
+          reconnectTimerRef.current = setTimeout(connect, 5000);
+        } else {
+          setSseError(true);
+        }
+      };
+    }
+    connect();
+    return () => {
+      if (esRef.current) { esRef.current.close(); esRef.current = null; }
+      if (reconnectTimerRef.current) { clearTimeout(reconnectTimerRef.current); }
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleClaim(orderId) {
     setClaimingId(orderId);
@@ -175,6 +209,12 @@ export default function Orders() {
           >
             Retry
           </button>
+        </div>
+      )}
+
+      {sseError && (
+        <div style={{ background: '#fff8e1', color: '#856404', border: '1px solid #f9a825', borderRadius: 8, padding: '10px 16px', marginBottom: 16, fontSize: 13 }}>
+          ⚡ Live updates unavailable — refresh to see latest status.
         </div>
       )}
 

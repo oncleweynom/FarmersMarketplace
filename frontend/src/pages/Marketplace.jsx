@@ -8,7 +8,7 @@ import { useCompare } from "../context/CompareContext";
 import { useXlmRate } from "../utils/useXlmRate";
 import { useDebounce } from "../utils/useDebounce";
 import StarRating from "../components/StarRating";
-import Pagination from "../components/Pagination";
+import SkeletonProductCard from "../components/SkeletonProductCard";
 import Spinner from "../components/Spinner";
 import AuctionCard from "../components/AuctionCard";
 import FlashSaleCountdown from "../components/FlashSaleCountdown";
@@ -318,14 +318,17 @@ function getFreshnessBadge(bestBefore) {
   return { text: 'Fresh', color: '#4caf50' };
 }
 
+const SCROLL_KEY = 'marketplace_scroll';
+
 export default function Marketplace() {
   const { t } = useTranslation();
   const [products, setProducts] = useState([]);
   const [auctions, setAuctions] = useState([]);
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [page, setPage] = useState(1);
-  const [pagination, setPagination] = useState({ total: 0, totalPages: 1 });
+  const [hasMore, setHasMore] = useState(true);
   const [bundles, setBundles] = useState([]);
   const [bundleMsg, setBundleMsg] = useState({});
   const [recommendations, setRecommendations] = useState([]);
@@ -342,61 +345,149 @@ export default function Marketplace() {
   const debouncedSeller = useDebounce(filters.seller, 300);
 
   const abortRef = useRef(null);
+  const sentinelRef = useRef(null);
+  const observerRef = useRef(null);
+  const pageRef = useRef(1);
+  const hasMoreRef = useRef(true);
+  const filtersRef = useRef(filters);
 
-  const load = useCallback(async (f, p = 1) => {
+  // Keep filtersRef in sync
+  useEffect(() => { filtersRef.current = filters; }, [filters]);
+
+  async function fetchPage(f, p) {
+    let data, totalPages = 1;
+    if (f.search && f.search.trim()) {
+      const res = await api.searchProducts(f.search.trim());
+      data = res.data ?? res;
+      totalPages = 1;
+    } else {
+      const params = { page: p, limit: PAGE_SIZE };
+      if (f.category) params.category = f.category;
+      if (f.minPrice) params.minPrice = f.minPrice;
+      if (f.maxPrice && f.maxPrice < MAX_PRICE) params.maxPrice = f.maxPrice;
+      if (f.seller) params.seller = f.seller;
+      if (f.available) params.available = f.available;
+      if (f.sort && f.sort !== "newest") params.sort = f.sort;
+      if (f.lat && f.lng && f.radius) { params.lat = f.lat; params.lng = f.lng; params.radius = f.radius; }
+      const res = await api.getProducts(params);
+      data = res.data ?? [];
+      totalPages = res.totalPages ?? 1;
+    }
+    if (f.excludeAllergens && f.excludeAllergens.length > 0) {
+      data = data.filter(p => {
+        let allergens = [];
+        try { allergens = p.allergens ? JSON.parse(p.allergens) : []; } catch {}
+        return !f.excludeAllergens.some(a => allergens.includes(a));
+      });
+    }
+    return { data, totalPages };
+  }
+
+  // Initial load (resets list)
+  const load = useCallback(async (f) => {
     if (abortRef.current) abortRef.current.abort();
     const controller = new AbortController();
     abortRef.current = controller;
     setLoading(true);
+    setHasMore(true);
+    pageRef.current = 1;
+    hasMoreRef.current = true;
     try {
-      let data,
-        total = 0,
-        totalPages = 1;
-      if (f.search && f.search.trim()) {
-        const res = await api.searchProducts(f.search.trim(), { signal: controller.signal });
-        data = res.data ?? res;
-        total = data.length;
-        totalPages = 1;
-      } else {
-        const params = { page: p, limit: PAGE_SIZE };
-        if (f.category) params.category = f.category;
-        if (f.minPrice) params.minPrice = f.minPrice;
-        if (f.maxPrice && f.maxPrice < MAX_PRICE) params.maxPrice = f.maxPrice;
-        if (f.seller) params.seller = f.seller;
-        if (f.available) params.available = f.available;
-        if (f.sort && f.sort !== "newest") params.sort = f.sort;
-        if (f.lat && f.lng && f.radius) {
-          params.lat = f.lat;
-          params.lng = f.lng;
-          params.radius = f.radius;
-        }
-        const res = await api.getProducts(params, { signal: controller.signal });
-        data = res.data ?? [];
-        total = res.total ?? 0;
-        totalPages = res.totalPages ?? 1;
-      }
-      // Client-side allergen exclusion filter
-      if (f.excludeAllergens && f.excludeAllergens.length > 0) {
-        data = data.filter(p => {
-          let allergens = [];
-          try { allergens = p.allergens ? JSON.parse(p.allergens) : []; } catch {}
-          return !f.excludeAllergens.some(a => allergens.includes(a));
-        });
-        total = data.length;
-      }
+      const { data, totalPages } = await fetchPage(f, 1);
+      if (controller.signal.aborted) return;
       setProducts(data);
-      setPagination({ total, totalPages });
+      pageRef.current = 1;
+      const more = totalPages > 1;
+      setHasMore(more);
+      hasMoreRef.current = more;
       const aucs = await api.getAuctions().catch(() => ({ data: [] }));
       setAuctions(aucs.data || []);
+      // Save to sessionStorage for back-navigation restore
+      sessionStorage.setItem(SCROLL_KEY, JSON.stringify({ products: data, page: 1, hasMore: more, filters: f }));
     } catch (err) {
       if (err?.name !== 'AbortError') setProducts([]);
     }
-    if (!controller.signal.aborted) setLoading(false);
+    if (!controller.signal?.aborted) setLoading(false);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load next page (append)
+  const loadMore = useCallback(async () => {
+    if (!hasMoreRef.current || loadingMore) return;
+    setLoadingMore(true);
+    const nextPage = pageRef.current + 1;
+    try {
+      const { data, totalPages } = await fetchPage(filtersRef.current, nextPage);
+      setProducts(prev => {
+        const merged = [...prev, ...data];
+        sessionStorage.setItem(SCROLL_KEY, JSON.stringify({
+          products: merged, page: nextPage, hasMore: nextPage < totalPages, filters: filtersRef.current,
+        }));
+        return merged;
+      });
+      pageRef.current = nextPage;
+      const more = nextPage < totalPages;
+      setHasMore(more);
+      hasMoreRef.current = more;
+    } catch { /* ignore */ }
+    setLoadingMore(false);
+  }, [loadingMore]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Restore scroll position on back-navigation
+  useEffect(() => {
+    const saved = sessionStorage.getItem(SCROLL_KEY);
+    if (saved) {
+      try {
+        const { products: savedProducts, page: savedPage, hasMore: savedHasMore, filters: savedFilters } = JSON.parse(saved);
+        setProducts(savedProducts);
+        setFilters(savedFilters);
+        pageRef.current = savedPage;
+        hasMoreRef.current = savedHasMore;
+        setHasMore(savedHasMore);
+        setLoading(false);
+        // Restore scroll after render
+        requestAnimationFrame(() => {
+          const scrollY = sessionStorage.getItem(SCROLL_KEY + '_y');
+          if (scrollY) window.scrollTo(0, parseInt(scrollY, 10));
+        });
+        return;
+      } catch { /* fall through to normal load */ }
+    }
+    load(EMPTY_FILTERS);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Save scroll position continuously for SPA back-navigation
   useEffect(() => {
-    setPage(1);
-    load({ ...filters, search: debouncedSearch, seller: debouncedSeller }, 1);
+    const saveScroll = () => sessionStorage.setItem(SCROLL_KEY + '_y', String(window.scrollY));
+    window.addEventListener('scroll', saveScroll, { passive: true });
+    return () => window.removeEventListener('scroll', saveScroll);
+  }, []);
+
+  // IntersectionObserver for infinite scroll
+  useEffect(() => {
+    if (observerRef.current) observerRef.current.disconnect();
+    observerRef.current = new IntersectionObserver(
+      (entries) => { if (entries[0].isIntersecting) loadMore(); },
+      { rootMargin: '200px' }
+    );
+    if (sentinelRef.current) observerRef.current.observe(sentinelRef.current);
+    return () => observerRef.current?.disconnect();
+  }, [loadMore]);
+
+  // Re-observe sentinel when hasMore changes
+  useEffect(() => {
+    if (!hasMore && observerRef.current) observerRef.current.disconnect();
+    else if (hasMore && sentinelRef.current && observerRef.current) {
+      observerRef.current.observe(sentinelRef.current);
+    }
+  }, [hasMore]);
+
+  // Filter changes → reset and reload
+  useEffect(() => {
+    sessionStorage.removeItem(SCROLL_KEY);
+    sessionStorage.removeItem(SCROLL_KEY + '_y');
+    const f = { ...filters, search: debouncedSearch, seller: debouncedSeller };
+    load(f);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     debouncedSearch,
@@ -462,7 +553,9 @@ export default function Marketplace() {
 
   function reset() {
     setFilters(EMPTY_FILTERS);
-    setPage(1);
+    sessionStorage.removeItem(SCROLL_KEY);
+    sessionStorage.removeItem(SCROLL_KEY + '_y');
+    load(EMPTY_FILTERS);
   }
 
   function useNearMe() {
@@ -477,18 +570,12 @@ export default function Marketplace() {
           radius: filters.radius || 50,
         };
         setFilters(newFilters);
-        setPage(1);
-        load(newFilters, 1);
+        sessionStorage.removeItem(SCROLL_KEY);
+        load(newFilters);
         setGeoLoading(false);
       },
       () => setGeoLoading(false),
     );
-  }
-
-  function handlePageChange(newPage) {
-    setPage(newPage);
-    load(filters, newPage);
-    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   return (
@@ -803,7 +890,11 @@ export default function Marketplace() {
       </div>
 
       {loading ? (
-        <Spinner />
+        <div style={s.grid}>
+          {Array.from({ length: PAGE_SIZE }).map((_, i) => (
+            <SkeletonProductCard key={i} />
+          ))}
+        </div>
       ) : viewMode === "map" ? (
         <Suspense fallback={<Spinner />}>
           <MapView products={products} />
@@ -1016,13 +1107,19 @@ export default function Marketplace() {
         </div>
       )}
 
-      <Pagination
-        page={page}
-        totalPages={pagination.totalPages}
-        total={pagination.total}
-        limit={PAGE_SIZE}
-        onChange={handlePageChange}
-      />
+      {/* Infinite scroll sentinel */}
+      {!loading && (
+        <>
+          <div ref={sentinelRef} style={{ height: 1 }} aria-hidden="true" />
+          {loadingMore && (
+            <div style={{ ...s.grid, marginTop: 16 }}>
+              {Array.from({ length: 4 }).map((_, i) => (
+                <SkeletonProductCard key={i} />
+              ))}
+            </div>
+          )}
+        </>
+      )}
 
       {compareProducts.length > 0 && (
         <div style={s.compareBar}>
