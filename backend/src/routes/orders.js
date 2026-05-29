@@ -26,7 +26,7 @@ const { sendPushToUser } = require('../utils/pushNotifications');
 const { err } = require('../middleware/error');
 const { getCachedResponse, cacheResponse } = require('../utils/idempotency');
 const { resolveCoupon, calcDiscount } = require('./coupons');
-const { checkGeoFence } = require('../utils/geocheck');
+const { checkGeoFence, checkCoordinateGeoFence } = require('../utils/geocheck');
 const { broadcastStockUpdate } = require('./products');
 
 function parsePreorderUnlockUnix(preorderDeliveryDate) {
@@ -135,6 +135,13 @@ router.post('/', auth, validate.order, async (req, res) => {
   const clientIp = req.ip || req.socket?.remoteAddress || '';
   const { allowed: geoAllowed } = await checkGeoFence(product, buyer, clientIp);
   if (!geoAllowed) return err(res, 403, 'Not available in your region', 'region_restricted');
+
+  // Coordinate-based geo-fence check (server-side, cannot be bypassed by client)
+  const { delivery_lat, delivery_lng } = req.body;
+  const coordFence = checkCoordinateGeoFence(product, delivery_lat, delivery_lng);
+  if (!coordFence.allowed) {
+    return err(res, 403, 'Delivery location is outside the permitted area for this product', 'outside_delivery_area');
+  }
 
   const parsedWeight = req.body.weight ? parseFloat(req.body.weight) : (weight ? parseFloat(weight) : null);
   if (product.pricing_type === 'weight') {
