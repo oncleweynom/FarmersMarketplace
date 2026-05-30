@@ -32,33 +32,29 @@ const s = {
   },
 };
 
-// Group products by farmer to avoid stacking markers
 function groupByFarmer(products) {
   const map = new Map();
   for (const p of products) {
     if (p.farmer_lat == null || p.farmer_lng == null) continue;
     const key = `${p.farmer_lat},${p.farmer_lng}`;
-    if (!map.has(key)) map.set(key, { lat: p.farmer_lat, lng: p.farmer_lng, products: [] });
+    if (!map.has(key)) map.set(key, { lat: p.farmer_lat, lng: p.farmer_lng, farmerName: p.farmer_name, products: [] });
     map.get(key).products.push(p);
   }
   return Array.from(map.values());
 }
 
-export default function MapView({ products = [], lat, lng, farmerName, onBuy }) {
-  const navigate = useNavigate();
-  const hasSingleLocation = lat != null && lng != null;
-  const groups = hasSingleLocation
-    ? [{ lat, lng, farmerName, products: [] }]
-    : groupByFarmer(products);
 function RecenterMap({ center }) {
   const map = useMap();
   useEffect(() => { map.setView(center, map.getZoom()); }, [center, map]);
   return null;
 }
 
-export default function MapView({ products, onBuy }) {
+export default function MapView({ products = [], lat, lng, farmerName, onFarmerClick }) {
   const navigate = useNavigate();
-  const groups = groupByFarmer(products);
+  const hasSingleLocation = lat != null && lng != null;
+  const groups = hasSingleLocation
+    ? [{ lat, lng, farmerName, products: [] }]
+    : groupByFarmer(products);
   const [center, setCenter] = useState(null);
   const [toast, setToast] = useState('');
 
@@ -89,31 +85,15 @@ export default function MapView({ products, onBuy }) {
     );
   }
 
-  // Fall back to average of markers while geolocation is pending
-  const avgLat = groups.reduce((s, g) => s + g.lat, 0) / groups.length;
-  const avgLng = groups.reduce((s, g) => s + g.lng, 0) / groups.length;
+  const avgLat = groups.reduce((sum, g) => sum + g.lat, 0) / groups.length;
+  const avgLng = groups.reduce((sum, g) => sum + g.lng, 0) / groups.length;
   const mapCenter = center ?? [avgLat, avgLng];
 
   return (
-    <MapContainer
-      center={[avgLat, avgLng]}
-      zoom={7}
-      style={{ height: 520, width: '100%', borderRadius: 12, zIndex: 0 }}
-    >
-      <TileLayer
-        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-      />
-      {groups.map((group, i) => (
-        <Marker key={i} position={[group.lat, group.lng]}>
-          <Popup>
-            <div style={s.popup}>
-              {group.products && group.products.length > 0 ? (
-                group.products.map(p => (
     <div style={{ position: 'relative' }}>
       {toast && <div style={s.toast} role="status">{toast}</div>}
       <MapContainer
-        center={mapCenter}
+        center={[avgLat, avgLng]}
         zoom={7}
         style={{ height: 520, width: '100%', borderRadius: 12, zIndex: 0 }}
       >
@@ -121,32 +101,40 @@ export default function MapView({ products, onBuy }) {
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
-        {center && <RecenterMap center={center} />}
+        {center && <RecenterMap center={mapCenter} />}
         {groups.map((group, i) => (
-          <Marker key={i} position={[group.lat, group.lng]}>
+          <Marker
+            key={i}
+            position={[group.lat, group.lng]}
+            eventHandlers={onFarmerClick ? {
+              click: () => onFarmerClick(group.farmerName ?? group.products[0]?.farmer_name),
+            } : {}}
+          >
             <Popup>
               <div style={s.popup}>
-                {group.products.map(p => (
-                  <div key={p.id} style={{ marginBottom: group.products.length > 1 ? 12 : 0, paddingBottom: group.products.length > 1 ? 12 : 0, borderBottom: group.products.length > 1 ? '1px solid #eee' : 'none' }}>
-                    <div style={s.name}>{p.name}</div>
-                    <div style={s.price}>{p.price} XLM / {p.unit}</div>
-                    <div style={s.farmer}>🌾 {p.farmer_name}</div>
-                    {p.farmer_farm_address && <div style={s.address}>📍 {p.farmer_farm_address}</div>}
-                    <button style={s.btn} onClick={() => navigate(`/products/${p.id}`)}>View &amp; Buy</button>
+                {group.products.length > 0 ? (
+                  group.products.map(p => (
+                    <div
+                      key={p.id}
+                      style={{
+                        marginBottom: group.products.length > 1 ? 12 : 0,
+                        paddingBottom: group.products.length > 1 ? 12 : 0,
+                        borderBottom: group.products.length > 1 ? '1px solid #eee' : 'none',
+                      }}
+                    >
+                      <div style={s.name}>{p.name}</div>
+                      <div style={s.price}>{p.price} XLM / {p.unit}</div>
+                      <div style={s.farmer}>🌾 {p.farmer_name}</div>
+                      {p.farmer_farm_address && <div style={s.address}>📍 {p.farmer_farm_address}</div>}
+                      <button style={s.btn} onClick={() => navigate(`/product/${p.id}`)}>View &amp; Buy</button>
+                    </div>
+                  ))
+                ) : (
+                  <div>
+                    <div style={s.name}>{group.farmerName || 'Farm location'}</div>
+                    <div style={s.farmer}>🌾 {group.farmerName || 'Farmer'}</div>
                   </div>
-                ))
-              ) : (
-                <div>
-                  <div style={s.name}>{group.farmerName || 'Farm location'}</div>
-                  <div style={s.farmer}>🌾 {group.farmerName || 'Farmer'}</div>
-                </div>
-              )}
-            </div>
-          </Popup>
-        </Marker>
-      ))}
-    </MapContainer>
-                ))}
+                )}
               </div>
             </Popup>
           </Marker>

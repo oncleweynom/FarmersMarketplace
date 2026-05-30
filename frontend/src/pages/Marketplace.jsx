@@ -897,7 +897,15 @@ export default function Marketplace() {
         </div>
       ) : viewMode === "map" ? (
         <Suspense fallback={<Spinner />}>
-          <MapView products={products} />
+          <MapView
+            products={products}
+            onFarmerClick={(name) => {
+              if (name) {
+                setFilters(f => ({ ...f, seller: name }));
+              }
+              setViewMode("grid");
+            }}
+          />
         </Suspense>
       ) : products.length === 0 ? (
         <div style={s.empty} role="status">
