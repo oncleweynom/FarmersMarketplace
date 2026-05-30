@@ -24,29 +24,68 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-// Fetch: cache-first for static assets, network-first for API
+// Fetch strategies
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // Network-first for API calls
-  if (url.pathname.startsWith('/api/')) {
+  // Navigation requests: cache-first, fallback to offline.html
+  if (request.mode === 'navigate') {
     event.respondWith(
-      fetch(request).catch(() => new Response(JSON.stringify({ error: 'offline' }), {
-        status: 503,
-        headers: { 'Content-Type': 'application/json' },
-      }))
+      caches.match(request)
+        .then((cached) => cached || fetch(request))
+        .catch(() => caches.match(OFFLINE_URL))
     );
     return;
   }
 
-  // Cache-first for everything else (static assets)
+  // Product listing API: stale-while-revalidate
+  if (url.pathname.startsWith('/api/products') && request.method === 'GET') {
+    event.respondWith(
+      caches.match(request).then((cached) => {
+        const fetchPromise = fetch(request).then((response) => {
+          if (response.ok && response.status === 200) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
+          }
+          return response;
+        }).catch(() => null);
+        return cached || fetchPromise || new Response(JSON.stringify({ error: 'offline' }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      })
+    );
+    return;
+  }
+
+  // Other API requests: network-first with cache fallback
+  if (url.pathname.startsWith('/api/')) {
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          if (response.ok && request.method === 'GET') {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
+          }
+          return response;
+        })
+        .catch(() =>
+          caches.match(request) || new Response(JSON.stringify({ error: 'offline' }), {
+            status: 503,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        )
+    );
+    return;
+  }
+
+  // Static assets: cache-first
   event.respondWith(
     caches.match(request).then((cached) => {
       if (cached) return cached;
       return fetch(request)
         .then((response) => {
-          // Cache successful GET responses for static assets
           if (response.ok && request.method === 'GET') {
             const clone = response.clone();
             caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
@@ -54,7 +93,7 @@ self.addEventListener('fetch', (event) => {
           return response;
         })
         .catch(() => {
-          // For navigation requests, serve offline page
+          // For navigation requests, serve offline page (shouldn't reach here)
           if (request.mode === 'navigate') {
             return caches.match(OFFLINE_URL);
           }
