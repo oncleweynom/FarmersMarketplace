@@ -25,11 +25,7 @@ export default function FlashSaleCountdown({ endsAt }) {
   }, [endsAt]);
 
   if (remaining.diff <= 0) {
-    return (
-      <div style={{ fontSize: 12, fontWeight: 700, color: "#b42318", marginTop: 6 }}>
-        Sale ended
-      </div>
-    );
+    return null;
   }
 
   const label = `${String(remaining.hours).padStart(2, "0")}:${String(remaining.minutes).padStart(2, "0")}:${String(remaining.seconds).padStart(2, "0")}`;
