@@ -102,6 +102,46 @@ impl RewardToken {
         env.events().publish(("burn", from.clone()), amount);
     }
 
+    /// Burn tokens on behalf of a holder using spender's allowance.
+    /// Only the approved spender can call this function.
+    pub fn burn_from(env: Env, spender: Address, from: Address, amount: i128) {
+        spender.require_auth();
+
+        if amount <= 0 {
+            panic!("amount must be positive");
+        }
+
+        // Validate spender's allowance
+        let key = AllowanceKey { from: from.clone(), spender: spender.clone() };
+        let val: AllowanceValue = env.storage().persistent().get(&key)
+            .unwrap_or(AllowanceValue { amount: 0, expiration_ledger: 0 });
+
+        if env.ledger().sequence() > val.expiration_ledger {
+            panic!("allowance expired");
+        }
+        if val.amount < amount {
+            panic!("insufficient allowance");
+        }
+
+        // Verify holder has sufficient balance
+        let balance = Self::balance(env.clone(), from.clone());
+        if balance < amount {
+            panic!("insufficient balance to burn");
+        }
+
+        // Deduct from allowance
+        let new_allowance = AllowanceValue { amount: val.amount - amount, expiration_ledger: val.expiration_ledger };
+        env.storage().persistent().set(&key, &new_allowance);
+
+        // Burn tokens
+        env.storage().persistent().set(&DataKey::Balance(from.clone()), &(balance - amount));
+
+        let supply: i128 = env.storage().instance().get(&DataKey::TotalSupply).unwrap_or(0);
+        env.storage().instance().set(&DataKey::TotalSupply, &(supply - amount));
+
+        env.events().publish(("burn_from", spender, from.clone()), amount);
+    }
+
     pub fn total_supply(env: Env) -> i128 {
         env.storage().instance().get(&DataKey::TotalSupply).unwrap_or(0)
     }
@@ -327,6 +367,99 @@ mod test {
         env.mock_all_auths();
         client.mint(&user, &50);
         client.burn(&user, &100);
+    }
+
+    // ── burn_from tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_burn_from_with_valid_allowance() {
+        let env = Env::default();
+        let (client, _admin) = setup_token(&env);
+        let owner = Address::generate(&env);
+        let spender = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.mint(&owner, &1000);
+        client.approve(&owner, &spender, &500, &1000);
+
+        // Spender burns 300 tokens on behalf of owner
+        client.burn_from(&spender, &owner, &300);
+
+        assert_eq!(client.balance(&owner), 700);
+        assert_eq!(client.total_supply(), 700);
+        assert_eq!(client.allowance(&owner, &spender), 200);
+    }
+
+    #[test]
+    #[should_panic(expected = "insufficient allowance")]
+    fn test_burn_from_exceeding_allowance_panics() {
+        let env = Env::default();
+        let (client, _admin) = setup_token(&env);
+        let owner = Address::generate(&env);
+        let spender = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.mint(&owner, &1000);
+        client.approve(&owner, &spender, &100, &1000);
+
+        // Spender tries to burn 200 tokens, but only has 100 allowance
+        client.burn_from(&spender, &owner, &200);
+    }
+
+    #[test]
+    #[should_panic(expected = "insufficient balance to burn")]
+    fn test_burn_from_insufficient_balance_panics() {
+        let env = Env::default();
+        let (client, _admin) = setup_token(&env);
+        let owner = Address::generate(&env);
+        let spender = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.mint(&owner, &100);
+        client.approve(&owner, &spender, &500, &1000);
+
+        // Spender tries to burn 200 tokens, but owner only has 100
+        client.burn_from(&spender, &owner, &200);
+    }
+
+    #[test]
+    #[should_panic(expected = "allowance expired")]
+    fn test_burn_from_expired_allowance_panics() {
+        let env = Env::default();
+        let (client, _admin) = setup_token(&env);
+        let owner = Address::generate(&env);
+        let spender = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.mint(&owner, &1000);
+        // Approve with expiration_ledger = 0
+        client.approve(&owner, &spender, &500, &0);
+        // Advance ledger sequence past expiration
+        env.ledger().set_sequence_number(1);
+
+        client.burn_from(&spender, &owner, &100);
+    }
+
+    #[test]
+    fn test_burn_from_multiple_burns_deduct_allowance() {
+        let env = Env::default();
+        let (client, _admin) = setup_token(&env);
+        let owner = Address::generate(&env);
+        let spender = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.mint(&owner, &1000);
+        client.approve(&owner, &spender, &500, &1000);
+
+        // First burn
+        client.burn_from(&spender, &owner, &100);
+        assert_eq!(client.allowance(&owner, &spender), 400);
+        assert_eq!(client.balance(&owner), 900);
+
+        // Second burn
+        client.burn_from(&spender, &owner, &150);
+        assert_eq!(client.allowance(&owner, &spender), 250);
+        assert_eq!(client.balance(&owner), 750);
     }
 
     #[test]
