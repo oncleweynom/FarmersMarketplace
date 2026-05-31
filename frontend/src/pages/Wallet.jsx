@@ -304,13 +304,16 @@ export default function Wallet() {
       )}
 
       {disclaimerVisible && network !== 'mainnet' && (
-        <div style={s.disclaimer} role="alert">
-          <span style={s.disclaimerIcon}>Warning</span>
-          <div style={s.disclaimerBody}>
-            <div style={s.disclaimerTitle}>Testnet Only - No Real Money</div>
-            This wallet uses <strong>Stellar Testnet XLM</strong>, which has <strong>no monetary value</strong> and cannot be exchanged or withdrawn.
+        <div role="dialog" aria-modal="true" aria-labelledby="disclaimer-modal-title" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: 32, maxWidth: 420, width: '90%', boxShadow: '0 4px 24px #0003' }}>
+            <div id="disclaimer-modal-title" style={{ fontSize: 20, fontWeight: 700, color: '#e65100', marginBottom: 12 }}>⚠️ Testnet Only</div>
+            <p style={{ fontSize: 14, color: '#555', lineHeight: 1.6, marginBottom: 20 }}>
+              This wallet uses <strong>Stellar Testnet XLM</strong>, which has <strong>no monetary value</strong> and cannot be exchanged or withdrawn.
+            </p>
+            <button onClick={dismissDisclaimer} style={{ width: '100%', padding: '12px 20px', borderRadius: 8, border: 'none', background: '#2d6a4f', color: '#fff', cursor: 'pointer', fontWeight: 600, fontSize: 14, minHeight: 44 }}>
+              I Understand, Dismiss
+            </button>
           </div>
-          <button style={s.disclaimerDismiss} onClick={dismissDisclaimer} aria-label="Dismiss">x</button>
         </div>
       )}
 
