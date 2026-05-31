@@ -148,6 +148,13 @@ export default function ProductDetail() {
   // Platform fee state
   const [feeInfo, setFeeInfo] = useState(null); // { feePercent, feeAmount, farmerAmount }
   const [shareMeta, setShareMeta] = useState(null);
+  // Auction state
+  const [auctionData, setAuctionData] = useState(null); // { current_bid, auction_end, highest_bidder }
+  const [bidAmount, setBidAmount] = useState('');
+  const [bidError, setBidError] = useState('');
+  const [bidLoading, setBidLoading] = useState(false);
+  const [bidSuccess, setBidSuccess] = useState(false);
+  const [auctionCountdown, setAuctionCountdown] = useState(null); // { days, hours, mins, secs, ended }
 
    // Helper to calculate distance between two coordinates in km
    const calculateDistance = (lat1, lng1, lat2, lng2) => {
@@ -518,6 +525,61 @@ export default function ProductDetail() {
       setError(getErrorMessage(e));
     } finally {
       setWalletLoading(false);
+    }
+  }
+
+  // Load auction details if product is auction
+  useEffect(() => {
+    if (!product || !product.type || product.type !== 'auction') return;
+    api.getAuction(product.id).then(res => {
+      setAuctionData(res.data ?? res);
+    }).catch(() => setAuctionData(null));
+  }, [product?.id, product?.type]);
+
+  // Countdown timer for auction
+  useEffect(() => {
+    if (!auctionData || !auctionData.auction_end) return;
+    const tick = () => {
+      const now = Date.now();
+      const end = new Date(auctionData.auction_end).getTime();
+      const diff = Math.max(0, end - now);
+      if (diff <= 0) {
+        setAuctionCountdown({ days: 0, hours: 0, mins: 0, secs: 0, ended: true });
+        return;
+      }
+      const secs = Math.floor(diff / 1000);
+      const days = Math.floor(secs / 86400);
+      const hours = Math.floor((secs % 86400) / 3600);
+      const mins = Math.floor((secs % 3600) / 60);
+      const s = secs % 60;
+      setAuctionCountdown({ days, hours, mins, secs: s, ended: false });
+    };
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [auctionData?.auction_end]);
+
+  async function handlePlaceBid() {
+    setBidError('');
+    setBidSuccess(false);
+    const amount = parseFloat(bidAmount);
+    if (!amount || isNaN(amount)) return setBidError('Enter a valid bid amount');
+    if (auctionCountdown?.ended) return setBidError('Auction has ended');
+    if (amount <= (auctionData?.current_bid || 0)) {
+      return setBidError(`Bid must be higher than current bid (${(auctionData?.current_bid || 0).toFixed(2)} XLM)`);
+    }
+    setBidLoading(true);
+    try {
+      await api.placeBid(product.id, { amount });
+      setBidSuccess(true);
+      setBidAmount('');
+      // Refresh auction data
+      api.getAuction(product.id).then(res => setAuctionData(res.data ?? res)).catch(() => {});
+      setTimeout(() => setBidSuccess(false), 3000);
+    } catch (e) {
+      setBidError(getErrorMessage(e));
+    } finally {
+      setBidLoading(false);
     }
   }
 
@@ -1136,7 +1198,44 @@ export default function ProductDetail() {
           );
         })()}
 
-        {currentStock === 0 ? (
+        {product?.type === 'auction' && auctionData ? (
+          <div style={{ border: '2px solid #2d6a4f', borderRadius: 12, padding: 20, marginBottom: 20, background: '#f8fdf9' }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: '#2d6a4f', marginBottom: 16 }}>🏆 Active Auction</div>
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 13, color: '#555', marginBottom: 4 }}>Current Highest Bid</div>
+              <div style={{ fontSize: 24, fontWeight: 700, color: '#2d6a4f' }}>{(auctionData.current_bid || 0).toFixed(2)} XLM</div>
+              {auctionData.highest_bidder && <div style={{ fontSize: 12, color: '#888', marginTop: 2 }}>by {auctionData.highest_bidder}</div>}
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 13, color: '#555', marginBottom: 4 }}>Time Remaining</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: auctionCountdown?.ended ? '#c0392b' : '#2d6a4f' }}>
+                {auctionCountdown?.ended ? 'Auction Ended' : `${auctionCountdown?.days}d ${auctionCountdown?.hours}h ${auctionCountdown?.mins}m ${auctionCountdown?.secs}s`}
+              </div>
+            </div>
+            {!auctionCountdown?.ended && (
+              <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+                <input
+                  type="number"
+                  placeholder={`Higher than ${(auctionData.current_bid || 0).toFixed(2)} XLM`}
+                  value={bidAmount}
+                  onChange={e => { setBidAmount(e.target.value); setBidError(''); }}
+                  step="0.01"
+                  min={(auctionData.current_bid || 0) + 0.01}
+                  style={{ flex: 1, ...s.input, marginBottom: 0 }}
+                />
+                <button
+                  onClick={handlePlaceBid}
+                  disabled={bidLoading}
+                  style={{ ...s.btn, flex: '0 0 auto', whiteSpace: 'nowrap' }}
+                >
+                  {bidLoading ? 'Placing...' : 'Place Bid'}
+                </button>
+              </div>
+            )}
+            {bidError && <div style={{ ...s.err, marginBottom: 12 }}>{bidError}</div>}
+            {bidSuccess && <div style={{ background: '#d8f3dc', color: '#2d6a4f', padding: 12, borderRadius: 8, marginBottom: 12 }}>✅ Bid placed successfully!</div>}
+          </div>
+        ) : currentStock === 0 ? (
           <div>
             <div style={{ color: '#c0392b', fontWeight: 600, marginBottom: 12 }}>{t('productDetail.outOfStock')}</div>
             {user?.role === 'buyer' && (
