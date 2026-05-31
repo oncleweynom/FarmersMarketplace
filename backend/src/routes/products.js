@@ -10,41 +10,7 @@ const { rewriteImageUrl } = require('../utils/cdn');
 const { sendBackInStockEmail } = require('../utils/mailer');
 const AutomaticOrderProcessor = require('../services/AutomaticOrderProcessor');
 
-// GET /api/products - public browse (hides unscheduled / out-of-stock products)
-router.get('/', (req, res) => {
-  const products = db.prepare(`
-    SELECT p.*, u.name AS farmer_name
-    FROM products p
-    JOIN users u ON p.farmer_id = u.id
-    LEFT JOIN product_scheduling ps ON p.id = ps.product_id
-    WHERE p.quantity > 0
-      AND (ps.available_from IS NULL OR ps.available_from <= datetime('now'))
-    ORDER BY p.created_at DESC
-  `).all();
-  res.json(products);
-});
 
-// GET /api/products/:id
-router.get('/:id', (req, res) => {
-  const product = db.prepare(`
-    SELECT p.*, u.name AS farmer_name, u.stellar_public_key AS farmer_wallet
-    FROM products p
-    JOIN users u ON p.farmer_id = u.id
-    WHERE p.id = ?
-  `).get(req.params.id);
-  if (!product) return res.status(404).json({ error: 'Product not found' });
-
-  // #616 — hide product if not yet available per scheduling
-  const schedule = db.prepare('SELECT available_from FROM product_scheduling WHERE product_id = ?')
-    .get(product.id);
-  if (schedule && new Date(schedule.available_from) > new Date()) {
-    return res.status(404).json({
-      error: 'Product not yet available',
-      available_from: schedule.available_from,
-    });
-  }
-
-  res.json(product);
 const VALID_ALLERGENS = ['gluten', 'nuts', 'dairy', 'eggs', 'soy', 'shellfish'];
 
 function parseAllowedRegions(value) {
@@ -242,9 +208,7 @@ router.post('/', auth, validate.product, async (req, res) => {
   const preorder = normalizePreorderInput(req.body);
   if (preorder.error) return err(res, 400, preorder.error, 'validation_error');
 
-  const { name, description, price, quantity, unit, weight_kg, available_from } = req.body;
-  if (!name || !price || !quantity)
-    return res.status(400).json({ error: 'name, price, quantity required' });
+  const { weight_kg, available_from } = req.body;
 
   const result = db.prepare(
     'INSERT INTO products (farmer_id, name, description, price, quantity, unit, weight_kg) VALUES (?, ?, ?, ?, ?, ?, ?)'
@@ -261,6 +225,7 @@ router.post('/', auth, validate.product, async (req, res) => {
     );
   }
 
+  await cache.delByPattern('products:*');
   res.json({ id: productId, message: 'Product listed' });
 });
 
@@ -312,30 +277,6 @@ router.get('/mine/list', auth, (req, res) => {
     ORDER BY p.created_at DESC
   `).all(req.user.id);
   res.json(products);
-  const allergenResult = parseAndValidateAllergens(req.body.allergens);
-  if (allergenResult.error) return err(res, 400, allergenResult.error, 'validation_error');
-
-  const safeName        = sanitizeText(name);
-  const safeDescription = sanitizeText(description || '');
-  const safeUnit        = sanitizeText(unit || 'unit');
-  const safeCategory    = sanitizeText(category || 'other');
-  const safeImageUrl    = image_url && /^\/uploads\/[a-f0-9]+\.(jpg|jpeg|png|webp)$/i.test(image_url) ? image_url : null;
-
-  const pricingType = req.body.pricing_type === 'weight' ? 'weight' : 'unit';
-  const minWeight   = pricingType === 'weight' ? parseFloat(req.body.min_weight) : null;
-  const maxWeight   = pricingType === 'weight' ? parseFloat(req.body.max_weight) : null;
-
-  let batchId = null;
-  if (req.body.batch_id !== undefined && req.body.batch_id !== null && req.body.batch_id !== '') {
-    batchId = parseInt(req.body.batch_id, 10);
-    if (Number.isNaN(batchId) || batchId < 1) return err(res, 400, 'batch_id must be a positive integer', 'validation_error');
-    const { rows: bRows } = await db.query(
-      'SELECT id FROM harvest_batches WHERE id = $1 AND farmer_id = $2',
-      [batchId, req.user.id]
-    );
-  }
-
-  res.json({ id: productId, message: 'Product listed' });
 });
 
 // PUT /api/products/:id/schedule - farmer sets or updates pre-order availability
@@ -488,6 +429,7 @@ router.patch('/:id', auth, async (req, res) => {
     await db.query('INSERT INTO price_history (product_id, price) VALUES ($1, $2)', [req.params.id, updates.price]);
   }
 
+  await cache.delByPattern('products:*');
   res.json({ success: true, message: 'Product updated' });
 });
 
@@ -532,20 +474,13 @@ router.patch('/:id', auth, async (req, res) => {
  *                 openOrders: { type: array }
  */
 // DELETE /api/products/:id
-router.delete('/:id', auth, (req, res) => {
-  const product = db.prepare('SELECT * FROM products WHERE id = ? AND farmer_id = ?')
-    .get(req.params.id, req.user.id);
-  if (!product) return res.status(404).json({ error: 'Not found or not yours' });
-  db.prepare('DELETE FROM product_scheduling WHERE product_id = ?').run(req.params.id);
-  db.prepare('DELETE FROM products WHERE id = ?').run(req.params.id);
-  res.json({ message: 'Deleted' });
 router.delete('/:id', auth, async (req, res) => {
   const { rowCount } = await db.query(
     'DELETE FROM products WHERE id = $1 AND farmer_id = $2',
     [req.params.id, req.user.id]
   );
   if (rowCount === 0) return err(res, 404, 'Not found or not yours', 'not_found');
-  await cache.del('products:{}');
+  await cache.delByPattern('products:*');
   res.json({ success: true, message: 'Deleted' });
 });
 

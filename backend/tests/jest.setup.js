@@ -68,16 +68,40 @@ jest.mock('../src/utils/stellar', () => ({
   claimBalance: jest.fn().mockResolvedValue('CLAIM_TX_001'),
 }));
 
+// --- Missing utility mocks ---
+jest.mock('../src/utils/cdn', () => ({ rewriteImageUrl: (url) => url }));
+jest.mock('../src/utils/pushNotifications', () => ({ sendPushToUser: jest.fn().mockResolvedValue({}) }));
+jest.mock('../src/utils/geocheck', () => ({ checkGeoFence: jest.fn().mockResolvedValue({ allowed: true }) }));
+jest.mock('../src/utils/idempotency', () => ({
+  getCachedResponse: jest.fn().mockReturnValue(null),
+  cacheResponse: jest.fn(),
+}));
+jest.mock('../src/services/AutomaticOrderProcessor', () =>
+  jest.fn().mockImplementation(() => ({
+    processWaitlistOnRestock: jest.fn().mockResolvedValue({ success: true, processed: 0, skipped: 0 }),
+  }))
+);
+
+// --- Cache mock ---
+jest.mock('../src/cache', () => ({
+  get: jest.fn().mockResolvedValue(null),
+  set: jest.fn().mockResolvedValue(undefined),
+  del: jest.fn().mockResolvedValue(undefined),
+  delByPattern: jest.fn().mockResolvedValue(undefined),
+}));
+
 // --- requestLogger mock (uuid is ESM in v13, avoid parse error) ---
 jest.mock('../src/middleware/requestLogger', () => (req, res, next) => next());
 
-// --- Routes mock: only mount auth so other broken route files don't parse ---
+// --- Routes mock ---
 jest.mock('../src/routes', () => {
   const express = require('express');
   const router = express.Router();
   router.use('/api/auth', require('../src/routes/auth'));
-  router.use('/api/analytics', require('../src/routes/analytics'));
+  router.use('/api/products', require('../src/routes/products'));
+  router.use('/api/orders', require('../src/routes/orders'));
   router.use('/api/orders/:id/return', require('../src/routes/returns'));
+  router.use('/api/analytics', require('../src/routes/analytics'));
   router.use('/api/orders', require('../src/routes/orders'));
   return router;
 });

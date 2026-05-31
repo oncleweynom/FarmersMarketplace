@@ -42,9 +42,7 @@ router.get('/', auth, (req, res) => {
     ORDER BY r.created_at DESC
   `).all(req.user.id);
   res.json(returns);
-const router = require('express').Router({ mergeParams: true });
-const db = require('../db/schema');
-const auth = require('../middleware/auth');
+});
 
 // POST /api/returns - buyer submits a return request
 router.post('/', auth, (req, res) => {

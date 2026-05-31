@@ -43,20 +43,6 @@ function haversineKm(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// POST /api/orders - buyer places + pays for an order
-router.post('/', auth, async (req, res) => {
-  if (req.user.role !== 'buyer')
-    return res.status(403).json({ error: 'Only buyers can place orders' });
-
-  const { product_id, quantity, delivery_lat, delivery_lng } = req.body;
-  if (!product_id || !quantity)
-    return res.status(400).json({ error: 'product_id and quantity required' });
-
-  const product = db.prepare(`
-    SELECT p.*, u.stellar_public_key AS farmer_wallet, u.farm_lat, u.farm_lng
-    FROM products p JOIN users u ON p.farmer_id = u.id
-    WHERE p.id = ?
-  `).get(product_id);
 function parsePreorderUnlockUnix(preorderDeliveryDate) {
   const ms = Date.parse(`${preorderDeliveryDate}T00:00:00Z`);
   if (Number.isNaN(ms)) return null;
@@ -325,26 +311,6 @@ router.post('/', auth, validate.order, async (req, res) => {
     }
   }
 
-  const buyer = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
-  const itemTotal = product.price * quantity;
-
-  // #617 — weight-based shipping cost
-  let shippingCost = 0;
-  if (
-    delivery_lat != null && delivery_lng != null &&
-    product.farm_lat != null && product.farm_lng != null
-  ) {
-    const distKm = haversineKm(product.farm_lat, product.farm_lng, delivery_lat, delivery_lng);
-    const totalWeightKg = (product.weight_kg || 1.0) * quantity;
-    shippingCost = parseFloat((totalWeightKg * distKm * SHIPPING_RATE).toFixed(7));
-  }
-
-  const grandTotal = parseFloat((itemTotal + shippingCost).toFixed(7));
-
-  const order = db.prepare(
-    'INSERT INTO orders (buyer_id, product_id, quantity, total_price, shipping_cost, status) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(req.user.id, product_id, quantity, grandTotal, shippingCost, 'pending');
-
   const { rows: orderRows } = await db.query(
     `INSERT INTO orders (buyer_id, product_id, quantity, total_price, custom_price, status, address_id) 
      VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
@@ -372,20 +338,6 @@ router.post('/', auth, validate.order, async (req, res) => {
 
   // 5. Payment Processing
   try {
-    const txHash = await sendPayment({
-      senderSecret: buyer.stellar_secret_key,
-      receiverPublicKey: product.farmer_wallet,
-      amount: grandTotal,
-      memo: `Order#${orderId}`,
-    });
-
-    db.prepare('UPDATE orders SET status = ?, stellar_tx_hash = ? WHERE id = ?').run('paid', txHash, orderId);
-    db.prepare('UPDATE products SET quantity = quantity - ? WHERE id = ?').run(quantity, product_id);
-
-    res.json({ orderId, status: 'paid', txHash, itemTotal, shippingCost, grandTotal });
-  } catch (err) {
-    db.prepare('UPDATE orders SET status = ? WHERE id = ?').run('failed', orderId);
-    res.status(402).json({ error: 'Payment failed: ' + err.message, orderId });
     let txHash;
     let balanceId = null;
 
@@ -779,6 +731,8 @@ router.get('/sales', auth, (req, res) => {
     ORDER BY o.created_at DESC
   `).all(req.user.id);
   res.json(sales);
+});
+
 // Dispute & Refund handlers (Soroban Escrow)
 router.post('/:id/dispute', auth, async (req, res) => {
   const { rows } = await db.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
@@ -803,6 +757,8 @@ router.post('/:id/refund', auth, async (req, res) => {
   try {
     const result = await invokeEscrowContract({ action: 'refund', senderSecret: uRows[0].stellar_secret_key, orderId: Number(order.id) });
     await db.query('UPDATE orders SET escrow_status = $1, stellar_tx_hash = $2 WHERE id = $3', ['refunded', result.txHash, order.id]);
+    res.json({ success: true, txHash: result.txHash });
+  } catch (e) { res.status(402).json({ success: false, message: e.message }); }
     return res.json({ success: true, txHash: result.txHash });
   } catch (e) {
     return res.status(402).json({ success: false, message: 'Refund failed: ' + e.message, code: 'refund_failed' });

@@ -399,6 +399,22 @@ router.post('/logout', async (req, res) => {
   res.json({ ok: true });
 });
 
+// POST /api/auth/deactivate — soft-deactivate account (GDPR: PII anonymized after 30 days)
+router.post('/deactivate', auth, async (req, res) => {
+  const { rows } = await db.query('SELECT id FROM users WHERE id = $1', [req.user.id]);
+  if (!rows[0]) return err(res, 404, 'User not found', 'not_found');
+
+  await db.query(
+    'UPDATE users SET active = 0, deactivated_at = CURRENT_TIMESTAMP WHERE id = $1',
+    [req.user.id]
+  );
+
+  // Revoke all sessions
+  await db.query('DELETE FROM refresh_tokens WHERE user_id = $1', [req.user.id]);
+  res.clearCookie('refreshToken', { path: '/api/auth' });
+  res.json({ success: true, message: 'Account deactivated. Your data will be anonymized after 30 days.' });
+});
+
 // DELETE /api/auth/account — self-service account deletion
 router.delete('/account', auth, async (req, res) => {
   const force = req.query.force === 'true';

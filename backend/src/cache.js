@@ -49,4 +49,18 @@ async function del(...keys) {
   }
 }
 
-module.exports = { get, set, del };
+async function delByPattern(pattern) {
+  if (!client) return;
+  try {
+    let cursor = '0';
+    do {
+      const [nextCursor, keys] = await client.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
+      cursor = nextCursor;
+      if (keys.length > 0) await client.del(...keys);
+    } while (cursor !== '0');
+  } catch (err) {
+    console.debug('[cache] delByPattern error:', err.message);
+  }
+}
+
+module.exports = { get, set, del, delByPattern };

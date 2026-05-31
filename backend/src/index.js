@@ -25,6 +25,7 @@ const { startFreshnessJob } = require('./jobs/processFreshnessAlerts');
 const { startContractMonitor } = require('./jobs/contractMonitor');
 const { startPushSubscriptionCleanup } = require('./jobs/cleanupPushSubscriptions');
 const { startExpiryJob } = require('./jobs/deactivateExpiredProducts');
+const { startAnonymizeJob } = require('./jobs/anonymizeDeactivatedUsers');
 const { createBackup } = require('./scripts/backup');
 const PORT = process.env.PORT || 4000;
 
@@ -35,6 +36,7 @@ app.listen(PORT, () => {
   startFreshnessJob();
   startContractMonitor();
   startPushSubscriptionCleanup();
+  startAnonymizeJob();
   startExpiryJob();
   
   // Schedule daily backup at midnight
