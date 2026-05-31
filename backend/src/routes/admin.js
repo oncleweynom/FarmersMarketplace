@@ -87,7 +87,7 @@ router.get('/users', adminAuth, (req, res) => {
   
   // Get paginated data
   const users = db.prepare(`
-    SELECT id, name, email, role, created_at, active
+    SELECT id, name, email, role, created_at, active, banned_at
     FROM users
     ${whereClause}
     ORDER BY created_at DESC
