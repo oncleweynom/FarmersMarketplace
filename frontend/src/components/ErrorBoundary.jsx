@@ -1,4 +1,5 @@
 import React from 'react';
+import { captureException } from '../utils/sentry';
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -31,6 +32,9 @@ class ErrorBoundary extends React.Component {
         timestamp: new Date().toISOString(),
       },
     });
+
+    // Report to Sentry if configured
+    captureException(error);
 
     // Optionally log to backend
     this.logErrorToBackend(error, errorInfo);

@@ -244,6 +244,10 @@ export const api = {
   removeStockAlert: (productId) => request(`/products/${productId}/alert`, { method: 'DELETE' }),
   getMyAlert: (productId) => request(`/products/${productId}/alert/status`),
 
+  joinWaitlist: (productId, body) => request(`/products/${productId}/waitlist`, { method: 'POST', body }),
+  leaveWaitlist: (productId) => request(`/products/${productId}/waitlist`, { method: 'DELETE' }),
+  getWaitlistStatus: (productId) => request(`/products/${productId}/waitlist/status`),
+
   getXlmRate: () => request('/rates/xlm-usd'),
   getMarketRate: () => request('/market/xlm-usdc'),
   bulkUpdatePrices: (updates, adjustment_percent) =>

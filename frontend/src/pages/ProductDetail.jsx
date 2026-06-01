@@ -18,6 +18,7 @@ import { useTranslation } from 'react-i18next';
 import QRCode from 'qrcode.react';
 import { useReviewForm } from '../hooks/useReviewForm';
 import { usePaymentLink } from '../hooks/usePaymentLink';
+import { addRecentlyViewed } from '../utils/recentlyViewed';
 
 const POLL_INTERVAL_MS = 3000;
 const TIMEOUT_MS = 60000;
@@ -114,6 +115,10 @@ export default function ProductDetail() {
    const [paidOrders, setPaidOrders] = useState([]);
    const [customPrice, setCustomPrice] = useState('');
   const [liveStock, setLiveStock] = useState(null); // Real-time stock from SSE
+  const [isOnWaitlist, setIsOnWaitlist] = useState(false);
+  const [waitlistPosition, setWaitlistPosition] = useState(null);
+  const [waitlistLoading, setWaitlistLoading] = useState(false);
+  const [waitlistError, setWaitlistError] = useState('');
 
    // Price tiers state
   const [tiers, setTiers] = useState([]);
@@ -244,6 +249,20 @@ export default function ProductDetail() {
   useEffect(() => {
     if (user?.role !== 'buyer') return;
     api.getMyAlert(id).then(res => setAlertSet(res.subscribed)).catch(() => {});
+  }, [id, user]);
+
+  useEffect(() => {
+    if (product) {
+      addRecentlyViewed(product);
+    }
+  }, [product?.id]);
+
+  useEffect(() => {
+    if (user?.role !== 'buyer') return;
+    api.getWaitlistStatus(id).then(res => {
+      setIsOnWaitlist(res.is_on_waitlist);
+      setWaitlistPosition(res.position || null);
+    }).catch(() => {});
   }, [id, user]);
 
    useEffect(() => {
@@ -395,6 +414,40 @@ export default function ProductDetail() {
       }
     } catch { /* ignore */ }
     setAlertLoading(false);
+  }
+
+  async function handleJoinWaitlist() {
+    if (!user) return navigate('/login');
+    if (!selectedAddressId) return setWaitlistError('Please select a delivery address');
+    setWaitlistLoading(true);
+    setWaitlistError('');
+    try {
+      const res = await api.joinWaitlist(product.id, { address_id: selectedAddressId });
+      setIsOnWaitlist(true);
+      setWaitlistPosition(res.position || 1);
+      showToast('Successfully joined waitlist', 'success');
+    } catch (e) {
+      setWaitlistError(getErrorMessage(e));
+      showToast(getErrorMessage(e), 'error');
+    } finally {
+      setWaitlistLoading(false);
+    }
+  }
+
+  async function handleLeaveWaitlist() {
+    setWaitlistLoading(true);
+    setWaitlistError('');
+    try {
+      await api.leaveWaitlist(product.id);
+      setIsOnWaitlist(false);
+      setWaitlistPosition(null);
+      showToast('Removed from waitlist', 'success');
+    } catch (e) {
+      setWaitlistError(getErrorMessage(e));
+      showToast(getErrorMessage(e), 'error');
+    } finally {
+      setWaitlistLoading(false);
+    }
   }
   async function handleApplyCoupon() {
     if (!couponCode.trim()) return;
@@ -1140,9 +1193,21 @@ export default function ProductDetail() {
           <div>
             <div style={{ color: '#c0392b', fontWeight: 600, marginBottom: 12 }}>{t('productDetail.outOfStock')}</div>
             {user?.role === 'buyer' && (
-              <button style={{ ...s.btn, background: alertSet ? '#888' : '#2d6a4f' }} onClick={handleAlert} disabled={alertLoading}>
-                {alertLoading ? '...' : alertSet ? t('productDetail.alertSet') : t('productDetail.notifyMe')}
-              </button>
+              <>
+                {isOnWaitlist ? (
+                  <>
+                    {waitlistPosition && <div style={{ fontSize: 14, color: '#2d6a4f', marginBottom: 12 }}>You're #{waitlistPosition} on the waitlist</div>}
+                    <button style={{ ...s.btn, background: '#888', marginBottom: 8 }} onClick={handleLeaveWaitlist} disabled={waitlistLoading}>
+                      {waitlistLoading ? '...' : 'Leave Waitlist'}
+                    </button>
+                  </>
+                ) : (
+                  <button style={{ ...s.btn, background: '#2d6a4f', marginBottom: 8 }} onClick={handleJoinWaitlist} disabled={waitlistLoading}>
+                    {waitlistLoading ? '...' : 'Join Waitlist'}
+                  </button>
+                )}
+                {waitlistError && <div style={s.err}>{waitlistError}</div>}
+              </>
             )}
           </div>
         ) : (

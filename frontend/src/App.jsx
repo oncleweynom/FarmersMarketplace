@@ -11,6 +11,7 @@ import Navbar from './components/Navbar';
 import AnnouncementBanner from './components/AnnouncementBanner';
 import LoadingSpinner from './components/LoadingSpinner';
 import PageLoader from './components/PageLoader';
+import { initSentry } from './utils/sentry';
 
 const LoginPage = lazy(() => import('./pages/Auth').then(m => ({ default: m.LoginPage })));
 const RegisterPage = lazy(() => import('./pages/Auth').then(m => ({ default: m.RegisterPage })));
@@ -90,6 +91,10 @@ function AppContent() {
 }
 
 export default function App() {
+  React.useEffect(() => {
+    initSentry();
+  }, []);
+
   return (
     <HelmetProvider>
       <ErrorBoundary>
