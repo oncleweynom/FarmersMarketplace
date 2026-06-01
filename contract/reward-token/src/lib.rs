@@ -206,6 +206,20 @@ impl RewardToken {
         metadata.symbol
     }
 
+    /// Allow the admin to update the token name and symbol (#690).
+    /// Emits a `metadata_updated` event on success.
+    pub fn update_metadata(env: Env, name: String, symbol: String) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+
+        let mut metadata: TokenMetadata = env.storage().instance().get(&DataKey::Metadata).unwrap();
+        metadata.name = name.clone();
+        metadata.symbol = symbol.clone();
+        env.storage().instance().set(&DataKey::Metadata, &metadata);
+
+        env.events().publish(("metadata_updated",), (name, symbol));
+    }
+
     /// Approve `spender` to spend up to `amount` tokens from `from`'s balance.
     /// The allowance expires at `expiration_ledger` (inclusive).
     pub fn approve(env: Env, from: Address, spender: Address, amount: i128, expiration_ledger: u32) {
@@ -568,6 +582,35 @@ mod test {
         env.ledger().set_sequence_number(1);
 
         client.transfer_from(&spender, &owner, &recipient, &100);
+    // ── #690 update_metadata ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_update_metadata_changes_name_and_symbol() {
+        let env = Env::default();
+        let (client, _admin) = setup_token(&env);
+
+        env.mock_all_auths();
+        client.update_metadata(
+            &String::from_str(&env, "New Name"),
+            &String::from_str(&env, "NEW"),
+        );
+
+        assert_eq!(client.name(), String::from_str(&env, "New Name"));
+        assert_eq!(client.symbol(), String::from_str(&env, "NEW"));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_update_metadata_requires_admin() {
+        let env = Env::default();
+        let (client, _admin) = setup_token(&env);
+        // No mock_all_auths — auth will fail for non-admin.
+        client.update_metadata(
+            &String::from_str(&env, "Hacked"),
+            &String::from_str(&env, "HCK"),
+        );
+    }
+
     // ── #475 — DataKey upgrade simulation ────────────────────────────────────
     // Verify that a balance written under DataKey::Balance(addr) is retrievable
     // after the contract is re-registered (simulating an upgrade).
