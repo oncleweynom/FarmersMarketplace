@@ -341,7 +341,7 @@ export default function Marketplace() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const { isFavorited, toggleFavorite } = useFavorites();
-  const { products: compareProducts, toggleProduct, isCompared } = useCompare();
+  const { products: compareProducts, toggleProduct, isCompared, clearProducts } = useCompare();
   const { usd } = useXlmRate();
 
   const debouncedSearch = useDebounce(filters.search, 300);
@@ -694,10 +694,7 @@ export default function Marketplace() {
             </div>
             <button
               style={{ ...s.resetBtn, fontSize: 12 }}
-              onClick={() => {
-                const { clearProducts } = useCompare();
-                clearProducts();
-              }}
+              onClick={clearProducts}
             >
               Clear
             </button>

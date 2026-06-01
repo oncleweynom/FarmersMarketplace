@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useCompare } from '../context/CompareContext';
 
 export const MAX_RECENTLY_COMPARED = 10;
+export const MAX_DISPLAY_PAIRS = 5;
 
 const s = {
   container: {
@@ -85,7 +86,7 @@ const s = {
 
 export default function RecentlyCompared() {
   const navigate = useNavigate();
-  const { history, clearHistory, saveToHistory } = useCompare();
+  const { history, clearHistory } = useCompare();
   const [productNames, setProductNames] = useState({});
 
   // Fetch product names for history entries
@@ -145,6 +146,12 @@ export default function RecentlyCompared() {
       <div style={s.header}>
         <h3 style={s.title}>📊 Recently Compared</h3>
         <button
+          style={{ ...s.clearBtn, marginRight: 8, borderColor: '#2d6a4f', color: '#2d6a4f' }}
+          onClick={() => navigate('/compare')}
+        >
+          View Compare Page
+        </button>
+        <button
           style={s.clearBtn}
           onClick={clearHistory}
           onMouseEnter={(e) => (e.target.style.background = '#fee')}
@@ -158,7 +165,7 @@ export default function RecentlyCompared() {
         <div style={s.empty}>No comparison history yet</div>
       ) : (
         <div style={s.list}>
-          {history.map((entry) => (
+          {history.slice(0, MAX_DISPLAY_PAIRS).map((entry) => (
             <div
               key={entry.id}
               style={s.item}
@@ -179,8 +186,6 @@ export default function RecentlyCompared() {
               <button
                 style={s.restoreBtn}
                 onClick={() => handleRestore(entry)}
-                onMouseEnter={(e) => (e.target.style.background = '#2d6a4f')}
-                onMouseLeave={(e) => (e.target.style.background = '#e8f5e9')}
                 onMouseEnter={(e) => {
                   e.target.style.background = '#2d6a4f';
                   e.target.style.color = '#fff';
