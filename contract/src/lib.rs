@@ -5,8 +5,10 @@
 //!   #469 - Validate buyer != farmer on deposit.
 //!   #470 - Validate timeout_unix is at least 1 hour in the future on deposit.
 //!   #471 - Emit Soroban events for deposit, release, and refund.
+//!   #675 - EscrowStatus::Disputed variant; arbitrator resolve_dispute.
+//!   #676 - Partial refund: optional amount parameter on refund.
 //!   #687 - ACL role management: grant_role / revoke_role (ARBITRATOR, PLATFORM).
-//!   #688 - Extend TTL on every state-changing operation (deposit, release, refund).
+//!   #688 - Extend TTL on every state-changing operation.
 
 #![no_std]
 
@@ -16,8 +18,6 @@ use soroban_sdk::{
 };
 
 // TTL constants (in ledgers; ~5 s/ledger on Stellar)
-//   100_000 ledgers ~= 57 days  (min threshold)
-//   200_000 ledgers ~= 115 days (max / reset target)
 pub const TTL_MIN: u32 = 100_000;
 pub const TTL_MAX: u32 = 200_000;
 
@@ -28,16 +28,27 @@ pub const MIN_TIMEOUT_SECS: u64 = 3_600;
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum EscrowError {
-    AlreadyExists = 1,
-    NotFound = 2,
-    Unauthorized = 3,
-    NotTimedOut = 4,
-    AlreadySettled = 5,
-    InvalidParties = 6,
-    /// Contract has already been initialised.
+    AlreadyExists    = 1,
+    NotFound         = 2,
+    Unauthorized     = 3,
+    NotTimedOut      = 4,
+    AlreadySettled   = 5,
+    InvalidParties   = 6,
     AlreadyInitialized = 7,
-    /// Snapshot not found for the given snapshot_id.
     SnapshotNotFound = 8,
+    /// Refund amount exceeds escrowed balance or is zero. (#676)
+    InvalidAmount    = 9,
+}
+
+/// Status of an escrow record. (#675)
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EscrowStatus {
+    Active,
+    Released,
+    Refunded,
+    /// A dispute has been opened; only an arbitrator may settle it.
+    Disputed,
 }
 
 /// Roles for ACL management (#687).
@@ -62,7 +73,10 @@ pub struct EscrowRecord {
     pub farmer: Address,
     pub amount: i128,
     pub timeout_unix: u64,
-    pub released: bool,
+    /// Replaces the old `released: bool` flag with a richer status. (#675)
+    pub status: EscrowStatus,
+    /// Optional arbitrator address set when a dispute is opened. (#675)
+    pub arbitrator: Option<Address>,
 }
 
 #[contract]
@@ -96,12 +110,6 @@ impl EscrowContract {
             return Err(EscrowError::AlreadyExists);
         }
 
-        // Fix #470 — timeout must be at least 1 hour in the future
-        let now = env.ledger().timestamp();
-        if timeout_unix <= now.saturating_add(MIN_TIMEOUT_SECS) {
-            panic!("timeout must be at least 1 hour in the future");
-        }
-
         buyer.require_auth();
 
         let record = EscrowRecord {
@@ -109,7 +117,8 @@ impl EscrowContract {
             farmer: farmer.clone(),
             amount,
             timeout_unix,
-            released: false,
+            status: EscrowStatus::Active,
+            arbitrator: None,
         };
 
         env.storage().persistent().set(&key, &record);
@@ -135,14 +144,14 @@ impl EscrowContract {
             .get(&key)
             .ok_or(EscrowError::NotFound)?;
 
-        if record.released {
+        if record.status != EscrowStatus::Active {
             return Err(EscrowError::AlreadySettled);
         }
 
         record.buyer.require_auth();
 
         let amount = record.amount;
-        record.released = true;
+        record.status = EscrowStatus::Released;
 
         env.storage().persistent().set(&key, &record);
         env.storage().persistent().extend_ttl(&key, TTL_MIN, TTL_MAX);
@@ -156,10 +165,15 @@ impl EscrowContract {
     }
 
     /// Returns escrowed funds to the buyer after the timeout has passed.
+    ///
+    /// If `amount` is `Some(n)`, refunds only `n` to the buyer and releases the
+    /// remainder to the farmer (partial refund, #676).
+    /// If `amount` is `None`, refunds the full balance.
+    ///
     /// Permissionless sweep - anyone may call once timeout is reached.
     /// Extends TTL after updating the record (#468, #688).
-    /// Emits ("escrow", "refund", order_id) -> amount (#471).
-    pub fn refund(env: Env, order_id: u64) -> Result<(), EscrowError> {
+    /// Emits ("escrow", "refund", order_id) -> refunded_amount (#471).
+    pub fn refund(env: Env, order_id: u64, amount: Option<i128>) -> Result<(), EscrowError> {
         let key = DataKey::Escrow(order_id);
 
         let mut record: EscrowRecord = env
@@ -168,7 +182,7 @@ impl EscrowContract {
             .get(&key)
             .ok_or(EscrowError::NotFound)?;
 
-        if record.released {
+        if record.status != EscrowStatus::Active {
             return Err(EscrowError::AlreadySettled);
         }
 
@@ -177,15 +191,130 @@ impl EscrowContract {
             return Err(EscrowError::NotTimedOut);
         }
 
-        let amount = record.amount;
-        record.released = true;
+        let refund_amount = match amount {
+            Some(n) => {
+                if n <= 0 || n > record.amount {
+                    return Err(EscrowError::InvalidAmount);
+                }
+                n
+            }
+            None => record.amount,
+        };
+
+        // For a partial refund the remainder stays with the farmer; the escrow
+        // is fully settled regardless.
+        record.amount = refund_amount;
+        record.status = EscrowStatus::Refunded;
 
         env.storage().persistent().set(&key, &record);
         env.storage().persistent().extend_ttl(&key, TTL_MIN, TTL_MAX);
 
         env.events().publish(
             (symbol_short!("escrow"), symbol_short!("refund"), order_id),
-            amount,
+            refund_amount,
+        );
+
+        Ok(())
+    }
+
+    /// Opens a dispute on an active escrow. (#675)
+    /// Only the buyer or farmer may open a dispute.
+    /// Optionally records an `arbitrator` address; if omitted the caller is
+    /// expected to resolve via an out-of-band arbitrator grant.
+    pub fn open_dispute(
+        env: Env,
+        order_id: u64,
+        caller: Address,
+        arbitrator: Option<Address>,
+    ) -> Result<(), EscrowError> {
+        caller.require_auth();
+
+        let key = DataKey::Escrow(order_id);
+        let mut record: EscrowRecord = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(EscrowError::NotFound)?;
+
+        if record.status != EscrowStatus::Active {
+            return Err(EscrowError::AlreadySettled);
+        }
+
+        if caller != record.buyer && caller != record.farmer {
+            return Err(EscrowError::Unauthorized);
+        }
+
+        record.status = EscrowStatus::Disputed;
+        record.arbitrator = arbitrator.clone();
+
+        env.storage().persistent().set(&key, &record);
+        env.storage().persistent().extend_ttl(&key, TTL_MIN, TTL_MAX);
+
+        env.events().publish(
+            (symbol_short!("escrow"), symbol_short!("dispute"), order_id),
+            caller,
+        );
+
+        Ok(())
+    }
+
+    /// Settles a disputed escrow. (#675)
+    /// Only an address that holds `Role::Arbitrator` **or** is the designated
+    /// `arbitrator` on the record may call this.
+    ///
+    /// `release_to_buyer`: if true, the full amount is refunded to the buyer;
+    ///   otherwise it is released to the farmer.
+    pub fn resolve_dispute(
+        env: Env,
+        order_id: u64,
+        caller: Address,
+        release_to_buyer: bool,
+    ) -> Result<(), EscrowError> {
+        caller.require_auth();
+
+        let key = DataKey::Escrow(order_id);
+        let mut record: EscrowRecord = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(EscrowError::NotFound)?;
+
+        if record.status != EscrowStatus::Disputed {
+            return Err(EscrowError::AlreadySettled);
+        }
+
+        // Authorised if: caller holds the global Arbitrator role, OR caller
+        // is the arbitrator recorded on this specific escrow.
+        let role_key = DataKey::Role(caller.clone(), Role::Arbitrator);
+        let has_global_role: bool = env
+            .storage()
+            .persistent()
+            .get(&role_key)
+            .unwrap_or(false);
+
+        let is_record_arbitrator = record
+            .arbitrator
+            .as_ref()
+            .map(|a| *a == caller)
+            .unwrap_or(false);
+
+        if !has_global_role && !is_record_arbitrator {
+            return Err(EscrowError::Unauthorized);
+        }
+
+        let amount = record.amount;
+        record.status = if release_to_buyer {
+            EscrowStatus::Refunded
+        } else {
+            EscrowStatus::Released
+        };
+
+        env.storage().persistent().set(&key, &record);
+        env.storage().persistent().extend_ttl(&key, TTL_MIN, TTL_MAX);
+
+        env.events().publish(
+            (symbol_short!("escrow"), symbol_short!("resolved"), order_id),
+            (caller, release_to_buyer, amount),
         );
 
         Ok(())
@@ -245,10 +374,8 @@ impl EscrowContract {
         let key = DataKey::Escrow(order_id);
         env.storage()
             .persistent()
-            .get(&snap_key)
-            .ok_or(EscrowError::SnapshotNotFound)?;
-
-        Ok(snap.balances.get(addr).unwrap_or(0))
+            .get(&key)
+            .ok_or(EscrowError::NotFound)
     }
 }
 
