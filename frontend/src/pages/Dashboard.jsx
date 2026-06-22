@@ -3,6 +3,9 @@ import ImageCropModal from '../components/ImageCropModal';
 import { Helmet } from 'react-helmet-async';
 import { api } from '../api/client';
 import { useXlmRate } from '../utils/useXlmRate';
+import { useAuth } from '../context/AuthContext';
+import { useTranslation } from 'react-i18next';
+import { getErrorMessage } from '../utils/errorMessages';
 
 const s = {
   page: { maxWidth: 900, margin: '0 auto', padding: 16 },
@@ -18,20 +21,26 @@ const s = {
   product: { borderBottom: '1px solid #eee', padding: '12px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
   del: { background: '#fee', color: '#c0392b', border: 'none', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontSize: 12 },
   msg: { padding: '10px 14px', borderRadius: 8, marginBottom: 12, fontSize: 14 },
+  preview: { width: '100%', maxHeight: 240, objectFit: 'cover', borderRadius: 8, marginBottom: 8, display: 'block' },
+  uploading: { fontSize: 13, color: '#666', marginBottom: 4 },
+  removeImg: { background: 'none', border: '1px solid #ddd', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontSize: 12, color: '#c0392b', marginBottom: 8 },
+  uploadZone: { border: '2px dashed #ddd', borderRadius: 8, padding: '24px 16px', textAlign: 'center', cursor: 'pointer', color: '#888', fontSize: 14, marginBottom: 8 },
+  uploadZoneActive: { borderColor: '#2d6a4f', background: '#f0faf4' },
+  imgErr: { color: '#c0392b', fontSize: 12, marginBottom: 8 },
+  csvBtn: { background: '#2d6a4f', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 20px', cursor: 'pointer', fontWeight: 600, fontSize: 14 },
+  csvInput: { display: 'none' },
+  csvResult: { padding: '10px 14px', borderRadius: 8, marginBottom: 12, fontSize: 14 },
+  productThumb: { width: 48, height: 48, objectFit: 'cover', borderRadius: 6, marginRight: 10 },
+  galleryPanel: { marginTop: 12, padding: 16, background: '#f8fdf9', borderRadius: 8, border: '1px solid #b7e4c7' },
+  galleryGrid: { display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 },
+  galleryItem: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 },
+  galleryThumb: { width: 72, height: 72, objectFit: 'cover', borderRadius: 6, border: '2px solid transparent' },
+  galleryThumbFirst: { border: '2px solid #2d6a4f' },
+  arrowBtn: { background: '#f0f0f0', border: 'none', borderRadius: 4, padding: '3px 7px', cursor: 'pointer', fontSize: 12 },
+  imgDelBtn: { background: '#fee', border: 'none', borderRadius: 4, padding: '3px 7px', cursor: 'pointer', fontSize: 12, color: '#c0392b' },
+  address: { fontSize: 12, color: '#888', marginTop: 4 },
 };
 
-function getEmptyForm() {
-  return {
-    name: '',
-    description: '',
-    price: '',
-    quantity: '',
-    unit: 'kg',
-    category: 'other',
-    is_preorder: false,
-    preorder_delivery_date: '',
-  };
-}
 const EMPTY_FORM = {
   name: '',
   description: '',
@@ -64,22 +73,38 @@ const EMPTY_FORM = {
   available_until: '',
 };
 
-import { useAuth } from '../context/AuthContext';
-import { useTranslation } from 'react-i18next';
-import { getErrorMessage } from '../utils/errorMessages';
-
 const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 const MAX_SIZE_MB = 5;
 const MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024;
+const MAX_IMAGES = 6;
+
+const STATUS_COLOR = {
+  pending: '#e67e22',
+  paid: '#2d6a4f',
+  processing: '#1a6b8a',
+  shipped: '#006d77',
+  delivered: '#2d6a4f',
+  cancelled: '#c0392b',
+  refunded: '#888',
+};
+const STATUS_ICON = {
+  pending: '⏳',
+  paid: '✅',
+  processing: '⚙️',
+  shipped: '📦',
+  delivered: '🎉',
+  cancelled: '❌',
+  refunded: '↩️',
+};
+const FARMER_STATUSES = ['processing', 'shipped', 'delivered', 'cancelled'];
 
 export default function Dashboard() {
   const { user } = useAuth();
   const { t } = useTranslation();
   const { rate, usd } = useXlmRate();
   const [products, setProducts] = useState([]);
-  const [form, setForm] = useState(getEmptyForm);
-  const [restockVals, setRestockVals] = useState({});
   const [form, setForm] = useState({ ...EMPTY_FORM });
+  const [restockVals, setRestockVals] = useState({});
   const [harvestBatches, setHarvestBatches] = useState([]);
   const [batchForm, setBatchForm] = useState({ batch_code: '', harvest_date: '', notes: '' });
   const [batchMsg, setBatchMsg] = useState(null);
@@ -267,7 +292,6 @@ export default function Dashboard() {
       setHarvestBatches(batchesRes?.data ?? []);
       setCoupons(couponsRes.data ?? []);
       const coops = coopsRes.data ?? [];
-      setCooperatives(coops);
       setCoupons(couponsRes.data ?? []);
       setCooperatives(coopsRes.data ?? []);
 
@@ -303,16 +327,6 @@ export default function Dashboard() {
 
   useEffect(() => {
     load();
-    // Load current profile
-    if (user?.id) {
-      api.getFarmer(user.id)
-        .then(res => {
-          const d = res.data;
-          setProfile({ bio: d.bio || '', location: d.location || '', avatar_url: d.avatar_url || '', federation_name: d.federation_name || '', latitude: d.latitude ?? '', longitude: d.longitude ?? '', farm_address: d.farm_address || '' });
-          if (d.avatar_url) setAvatarPreview(d.avatar_url);
-        })
-        .catch(() => {});
-    }
   }, [user?.id]);
 
   async function handleCreateBatch(e) {
@@ -482,7 +496,6 @@ export default function Dashboard() {
         batch_id: Number.isFinite(batchId) ? batchId : undefined,
       });
       setMsg({ type: 'ok', text: t('dashboard.productListedOk') });
-      setForm(getEmptyForm());
       setForm({ ...EMPTY_FORM });
       removeImage();
       load();
@@ -607,6 +620,99 @@ export default function Dashboard() {
       load();
     } catch (e) {
       setBulkPriceMsg({ type: 'err', text: e.message || 'Bulk update failed' });
+    }
+  }
+
+  async function handleRestock(productId) {
+    const qty = parseInt(restockVals[productId]);
+    if (!qty || qty <= 0) return;
+    try {
+      await api.restockProduct(productId, qty);
+      setRestockVals(prev => ({ ...prev, [productId]: '' }));
+      load();
+    } catch (e) {
+      alert(getErrorMessage(e));
+    }
+  }
+
+  async function handleStatusUpdate(orderId, status) {
+    try {
+      await api.updateOrderStatus(orderId, status);
+      setSalesMsg(prev => ({ ...prev, [orderId]: { type: 'ok', text: `Status updated to ${status}` } }));
+      load();
+    } catch (e) {
+      setSalesMsg(prev => ({ ...prev, [orderId]: { type: 'err', text: e.message } }));
+    }
+  }
+
+  async function handleGalleryMove(index, direction) {
+    const newImages = [...galleryImages];
+    const target = index + direction;
+    if (target < 0 || target >= newImages.length) return;
+    [newImages[index], newImages[target]] = [newImages[target], newImages[index]];
+    setGalleryImages(newImages);
+    try {
+      await api.reorderProductImages(galleryProductId, newImages.map(img => img.id));
+    } catch (e) {
+      setGalleryErr(getErrorMessage(e));
+    }
+  }
+
+  async function handleGalleryDelete(imageId) {
+    try {
+      await api.deleteProductImage(galleryProductId, imageId);
+      setGalleryImages(prev => prev.filter(img => img.id !== imageId));
+    } catch (e) {
+      setGalleryErr(getErrorMessage(e));
+    }
+  }
+
+  async function handleGalleryUpload(e) {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    setGalleryUploading(true);
+    setGalleryErr('');
+    for (const file of files) {
+      if (!ALLOWED_TYPES.includes(file.type)) { setGalleryErr('Only JPEG, PNG, or WebP allowed.'); continue; }
+      if (file.size > MAX_SIZE_BYTES) { setGalleryErr(`Image must be ${MAX_SIZE_MB} MB or smaller.`); continue; }
+      try {
+        const res = await api.uploadProductImage(galleryProductId, file);
+        setGalleryImages(prev => [...prev, res.data]);
+      } catch (err) { setGalleryErr(getErrorMessage(err)); }
+    }
+    setGalleryUploading(false);
+    e.target.value = '';
+  }
+
+  function downloadCsvTemplate() {
+    const headers = ['name', 'description', 'price', 'quantity', 'unit', 'category'];
+    const example = ['Tomatoes', 'Fresh vine tomatoes', '2.5', '100', 'kg', 'vegetables'];
+    const csv = [headers.join(','), example.join(',')].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    Object.assign(document.createElement('a'), { href: url, download: 'products-template.csv' }).click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function handleCsvUpload(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setCsvUploading(true);
+    setCsvResult(null);
+    try {
+      const res = await api.uploadProductsCsv(file);
+      const { created, errors } = res.data ?? {};
+      setCsvResult({
+        type: errors?.length ? 'warn' : 'ok',
+        text: `Imported ${created ?? 0} product(s)${errors?.length ? ` with ${errors.length} error(s).` : ' successfully.'}`,
+        details: errors || [],
+      });
+      if (created > 0) load();
+    } catch (err) {
+      setCsvResult({ type: 'err', text: getErrorMessage(err) });
+    } finally {
+      setCsvUploading(false);
+      e.target.value = '';
     }
   }
 
@@ -926,8 +1032,6 @@ export default function Dashboard() {
               </div>
             </div>
 
-            <button style={s.btn} type="submit">List Product</button>
-
             <details style={{ marginTop: 16 }}>
               <summary style={{ cursor: 'pointer', fontSize: 14, fontWeight: 600, color: '#2d6a4f', marginBottom: 8 }}>
                 Nutritional Information (Optional)
@@ -1168,12 +1272,6 @@ export default function Dashboard() {
           </div>
           {products.length === 0 && <p style={{ color: '#888', fontSize: 14 }}>No products yet. Add your first listing.</p>}
           {products.map(p => (
-            <div key={p.id} style={s.product}>
-              <div>
-                <div style={{ fontWeight: 600 }}>{p.name}</div>
-                <div style={{ fontSize: 13, color: '#666' }}>{p.price} XLM · {p.quantity} {p.unit}</div>
-              </div>
-              <button style={s.del} onClick={() => handleDelete(p.id)} aria-label={`Remove ${p.name}`}>Remove</button>
             <div key={p.id} style={{ ...s.product, flexDirection: 'column', alignItems: 'stretch' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div style={{ display: 'flex', alignItems: 'center' }}>

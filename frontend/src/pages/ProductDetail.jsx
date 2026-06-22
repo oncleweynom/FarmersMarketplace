@@ -215,28 +215,21 @@ export default function ProductDetail() {
       const p = res.data ?? res;
       setProduct(p);
       setQty(p.min_order_quantity || 1);
+      if (p.pricing_model === 'pwyw') setCustomPrice(String(p.min_price));
+      else if (p.pricing_model === 'donation') setCustomPrice('1.00');
     }).catch(() => navigate('/marketplace'));
     api.getProductShareMeta(id).then(res => setShareMeta(res.data ?? null)).catch(() => setShareMeta(null));
     loadReviews();
     api.getProductImages(id).then(res => {
       const imgs = res.data ?? [];
       setImages(imgs);
-      setActiveImg(imgs.length > 0 ? 0 : 0);
+      setActiveImg(0);
     }).catch(() => {});
     api.getProductTiers(id).then(res => setTiers(res.data ?? [])).catch(() => setTiers([]));
     api.getPriceHistory(id).then(res => setPriceHistory(res.data ?? [])).catch(() => setPriceHistory([]));
-    api.getProductShareMeta(id).then(res => setShareMeta(res.data ?? null)).catch(() => setShareMeta(null));
-    loadReviews();
-    api.getProduct(id).then(res => {
-      const p = res.data ?? res;
-      setProduct(p);
-      if (p.pricing_model === 'pwyw') setCustomPrice(String(p.min_price));
-      else if (p.pricing_model === 'donation') setCustomPrice('1.00');
-    }).catch(() => navigate('/marketplace'));
     api.getCalendar(id).then(res => {
       const weeks = res.data ?? [];
       setCalendar(weeks);
-      // Default to first available week
       const first = weeks.find(w => w.available);
       if (first) setSelectedWeek(first.week_start);
     }).catch(() => {});
@@ -910,27 +903,7 @@ export default function ProductDetail() {
             )}
           </div>
         )}
-        {product.pricing_model === 'fixed' ? (
-          <>
-            <div style={s.price}>
-              {unitPrice.toFixed(2)} XLM{" "}
-              <span style={{ fontSize: 14, fontWeight: 400 }}>
-                / {product.unit}
-              </span>
-              {tiers.length > 0 && (
-                <span style={{ fontSize: 12, color: '#666', marginLeft: 8 }}>
-                  (bulk pricing available)
-                </span>
-              )}
-            </div>
-            {isFlashSaleActive && (
-              <div style={{ marginBottom: 12 }}>
-                <div style={{ ...s.badge, background: '#fee2e2', color: '#b42318', fontWeight: 700, marginBottom: 4 }}>Flash Sale</div>
-                <FlashSaleCountdown endsAt={product.flash_sale_ends_at} />
-              </div>
-            )}
-          </>
-        ) : (
+        {product.pricing_model !== 'fixed' && (
           <div style={{ marginBottom: 20 }}>
             <label style={s.label}>{product.pricing_model === 'pwyw' ? 'Pay What You Want' : 'Donation'}</label>
             <div style={s.row}>
