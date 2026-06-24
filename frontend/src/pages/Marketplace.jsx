@@ -30,6 +30,13 @@ const CATEGORIES = [
 const PAGE_SIZE = 20;
 const MAX_PRICE = 500;
 const ALL_ALLERGENS = ["gluten", "nuts", "dairy", "eggs", "soy", "shellfish"];
+const GRADES = ["A", "B", "C", "Ungraded"];
+const GRADE_COLORS = {
+  A: { background: "#d8f3dc", color: "#2d6a4f" },
+  B: { background: "#fff3cd", color: "#856404" },
+  C: { background: "#ffe0b2", color: "#a85d00" },
+  Ungraded: { background: "#e0e0e0", color: "#555" },
+};
 
 const s = {
   page: { maxWidth: 1100, margin: "0 auto", padding: 24, paddingBottom: 140 },
@@ -134,6 +141,17 @@ const s = {
     marginBottom: 8,
     fontWeight: 700,
   },
+  gradeBadge: {
+    position: "absolute",
+    top: 8,
+    right: 8,
+    fontSize: 11,
+    fontWeight: 700,
+    borderRadius: 999,
+    padding: "2px 8px",
+    boxShadow: "0 1px 4px #0002",
+  },
+  cardImageWrap: { position: "relative" },
   empty: { textAlign: "center", padding: 60, color: "#888" },
   sellerSection: {
     display: "flex",
@@ -303,7 +321,21 @@ const EMPTY_FILTERS = {
   radius: "",
   excludeAllergens: [],
   sort: "newest",
+  grade: "",
 };
+
+function GradeBadge({ grade }) {
+  if (!grade) return null;
+  const colors = GRADE_COLORS[grade] || GRADE_COLORS.Ungraded;
+  return (
+    <div
+      style={{ ...s.gradeBadge, ...colors }}
+      aria-label={`Grade: ${grade}`}
+    >
+      {grade}
+    </div>
+  );
+}
 
 function getFreshnessBadge(bestBefore) {
   if (!bestBefore) return null;
@@ -370,6 +402,7 @@ export default function Marketplace() {
       if (f.maxPrice && f.maxPrice < MAX_PRICE) params.maxPrice = f.maxPrice;
       if (f.seller) params.seller = f.seller;
       if (f.available) params.available = f.available;
+      if (f.grade) params.grade = f.grade;
       if (f.sort && f.sort !== "newest") params.sort = f.sort;
       if (f.lat && f.lng && f.radius) { params.lat = f.lat; params.lng = f.lng; params.radius = f.radius; }
       const res = await api.getProducts(params);
@@ -382,6 +415,11 @@ export default function Marketplace() {
         try { allergens = p.allergens ? JSON.parse(p.allergens) : []; } catch {}
         return !f.excludeAllergens.some(a => allergens.includes(a));
       });
+    }
+    if (f.grade && f.search && f.search.trim()) {
+      // searchProducts doesn't support a grade param, so filter client-side
+      // when both a search term and a grade filter are active.
+      data = data.filter((p) => (p.grade || "Ungraded") === f.grade);
     }
     return { data, totalPages };
   }
@@ -501,6 +539,7 @@ export default function Marketplace() {
     filters.available,
     filters.excludeAllergens,
     filters.sort,
+    filters.grade,
   ]);
 
   useEffect(() => {
@@ -765,6 +804,18 @@ export default function Marketplace() {
           ))}
         </select>
 
+        <select
+          style={s.select}
+          value={filters.grade}
+          onChange={(e) => set("grade", e.target.value)}
+          aria-label="Filter by grade"
+        >
+          <option value="">All Grades</option>
+          {GRADES.map((g) => (
+            <option key={g} value={g}>{g}</option>
+          ))}
+        </select>
+
         <input
           style={s.input}
           placeholder={t("marketplace.sellerPlaceholder")}
@@ -937,21 +988,24 @@ export default function Marketplace() {
             >
               <div style={s.cardHeader}>
                 <div style={{ flex: 1 }}>
-                  {p.image_url ? (
-                    <img
-                      src={p.image_url}
-                      alt={p.name}
-                      style={{
-                        width: "100%",
-                        height: 140,
-                        objectFit: "cover",
-                        borderRadius: 8,
-                        marginBottom: 10,
-                      }}
-                    />
-                  ) : (
-                    <div style={{ fontSize: 32, marginBottom: 8 }}>🥬</div>
-                  )}
+                  <div style={s.cardImageWrap}>
+                    {p.image_url ? (
+                      <img
+                        src={p.image_url}
+                        alt={p.name}
+                        style={{
+                          width: "100%",
+                          height: 140,
+                          objectFit: "cover",
+                          borderRadius: 8,
+                          marginBottom: 10,
+                        }}
+                      />
+                    ) : (
+                      <div style={{ fontSize: 32, marginBottom: 8 }}>🥬</div>
+                    )}
+                    <GradeBadge grade={p.grade || "Ungraded"} />
+                  </div>
                 </div>
                 {user && user.role === "buyer" && (
                   <button
