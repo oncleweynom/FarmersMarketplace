@@ -110,6 +110,8 @@ jobs:
       - name: Run contract tests
         run: npm run test:contracts
 
+  wasm-size-profile:
+    name: WASM Size Profile (nightly)
   escrow-rust-tests:
     name: Escrow Contract Rust Tests (nightly)
     runs-on: ubuntu-latest
@@ -128,6 +130,27 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            contract/target
+          key: ${{ runner.os }}-cargo-contract-${{ hashFiles('contract/Cargo.toml', 'contract/reward-token/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-contract-
+
+      - name: Profile WASM binary sizes
+        run: bash contract/wasm-profile.sh | tee wasm-profile.txt
+
+      - name: Write job summary
+        run: |
+          echo "## WASM Binary Size Profile" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+          cat wasm-profile.txt >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload size report
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-size-profile
+          path: wasm-profile.txt
+          retention-days: 30
             contracts/escrow/target
           key: ${{ runner.os }}-cargo-escrow-${{ hashFiles('contracts/escrow/Cargo.toml') }}
           restore-keys: |
