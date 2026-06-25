@@ -24,21 +24,18 @@ class ErrorBoundary extends React.Component {
     console.error('Error caught by ErrorBoundary:', error);
     // eslint-disable-next-line no-console
     console.error('Error Info:', errorInfo);
+    const componentStack = errorInfo?.componentStack;
 
-    // Store error details for display
     this.setState({
       errorDetails: {
         message: error?.message,
         stack: error?.stack,
-        componentStack: errorInfo?.componentStack,
+        componentStack,
         timestamp: new Date().toISOString(),
       },
     });
 
-    // Report to Sentry if configured
-    captureException(error);
-
-    // Optionally log to backend
+    captureException(error, { extra: { componentStack } });
     this.logErrorToBackend(error, errorInfo);
   }
 
@@ -65,6 +62,10 @@ class ErrorBoundary extends React.Component {
       // eslint-disable-next-line no-console
       console.error('Error logging to backend:', err);
     }
+  };
+
+  handleRetry = () => {
+    this.setState({ hasError: false, errorMessage: '', errorDetails: null });
   };
 
   handleReload = () => {
@@ -94,7 +95,10 @@ class ErrorBoundary extends React.Component {
               </details>
             )}
 
-            <button style={styles.button} onClick={this.handleReload}>
+            <button style={styles.button} onClick={this.handleRetry}>
+              Try again
+            </button>
+            <button style={{ ...styles.button, background: '#888', marginLeft: 8 }} onClick={this.handleReload}>
               🔄 Reload Page
             </button>
           </div>

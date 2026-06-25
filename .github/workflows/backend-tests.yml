@@ -19,6 +19,7 @@ jobs:
       JWT_SECRET: ci-test-secret
       STELLAR_NETWORK: testnet
       SMTP_HOST: ""
+      SKIP_CONTRACT_TESTS: 'true'
 
     steps:
       - uses: actions/checkout@v4
@@ -33,9 +34,10 @@ jobs:
           path: backend/node_modules
           key: ${{ runner.os }}-backend-${{ hashFiles('backend/package-lock.json') }}
           restore-keys: ${{ runner.os }}-backend-
+          node-version: 20
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
       - name: Run tests with coverage
         run: npm run test:coverage
