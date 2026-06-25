@@ -19,6 +19,11 @@ class ErrorBoundary extends React.Component {
   }
 
   componentDidCatch(error, errorInfo) {
+    // Log error details to console
+    // eslint-disable-next-line no-console
+    console.error('Error caught by ErrorBoundary:', error);
+    // eslint-disable-next-line no-console
+    console.error('Error Info:', errorInfo);
     const componentStack = errorInfo?.componentStack;
 
     this.setState({
@@ -49,8 +54,12 @@ class ErrorBoundary extends React.Component {
           userAgent: navigator.userAgent,
           timestamp: new Date().toISOString(),
         }),
-      }).catch(e => console.error('Failed to log error to backend:', e));
+      }).catch(e => {
+        // eslint-disable-next-line no-console
+        console.error('Failed to log error to backend:', e);
+      });
     } catch (err) {
+      // eslint-disable-next-line no-console
       console.error('Error logging to backend:', err);
     }
   };

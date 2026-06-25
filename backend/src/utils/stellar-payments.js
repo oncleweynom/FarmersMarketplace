@@ -344,6 +344,48 @@ async function mintRewardTokens(buyerAddress, amount) {
 }
 
 /**
+ * Burns reward tokens from a buyer address via the reward-token Soroban contract (#847).
+ * Uses `burn_reward` (admin-callable, balance-capped) so a low balance is non-fatal.
+ * Returns null (no-op) when contract IDs / admin secret are unset.
+ * @param {string} buyerAddress  Stellar public key of the holder
+ * @param {number} amount        Token amount to burn (i128 units)
+ * @returns {Promise<string|null>} Transaction hash, or null on skip/error
+ */
+async function burnRewardTokens(buyerAddress, amount) {
+  const contractId = config.rewardTokenContractId;
+  if (!contractId) {
+    console.warn('[Stellar] REWARD_TOKEN_CONTRACT_ID not set, skipping reward burn');
+    return null;
+  }
+  const adminSecret = config.rewardTokenAdminSecret;
+  if (!adminSecret) {
+    console.warn('[Stellar] REWARD_TOKEN_ADMIN_SECRET not set, skipping reward burn');
+    return null;
+  }
+  try {
+    const adminKeypair = StellarSdk.Keypair.fromSecret(adminSecret);
+    const adminAccount = await server.loadAccount(adminKeypair.publicKey());
+    const contract = new StellarSdk.Contract(contractId);
+    const transaction = new StellarSdk.TransactionBuilder(adminAccount, { fee: StellarSdk.BASE_FEE, networkPassphrase })
+      .addOperation(
+        contract.call(
+          'burn_reward',
+          StellarSdk.nativeToScVal(buyerAddress, { type: 'address' }),
+          StellarSdk.nativeToScVal(amount, { type: 'i128' })
+        )
+      )
+      .setTimeout(30)
+      .build();
+    transaction.sign(adminKeypair);
+    const result = await server.submitTransaction(transaction);
+    return result.hash;
+  } catch (error) {
+    console.warn('[Stellar] Failed to burn reward tokens (non-fatal):', error.message);
+    return null;
+  }
+}
+
+/**
  * Returns the text memo of a Stellar transaction, or null if absent or unretrievable.
  * @param {string} txHash
  * @returns {Promise<string|null>}
@@ -401,6 +443,7 @@ module.exports = {
   claimBalance,
   createPreorderClaimableBalance,
   mintRewardTokens,
+  burnRewardTokens,
   getMemo,
   getOrderBook,
 };

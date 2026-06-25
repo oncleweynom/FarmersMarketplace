@@ -254,7 +254,10 @@ export default function AdminDashboard() {
       const acknowledged = filter === 'all' ? undefined : filter === 'acknowledged' ? true : false;
       const res = await api.adminGetContractAlerts(acknowledged);
       setContractAlerts(res.data ?? []);
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error(e);
+    }
     finally { setAlertsLoading(false); }
   }
 

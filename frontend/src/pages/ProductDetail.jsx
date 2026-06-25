@@ -21,9 +21,6 @@ import { useReviewForm } from '../hooks/useReviewForm';
 import { usePaymentLink } from '../hooks/usePaymentLink';
 import { addRecentlyViewed } from '../utils/recentlyViewed';
 
-const POLL_INTERVAL_MS = 3000;
-const TIMEOUT_MS = 60000;
-
 const s = {
   page: { maxWidth: 640, margin: "40px auto", padding: 16 },
   card: {

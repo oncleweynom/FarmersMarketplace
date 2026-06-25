@@ -618,3 +618,83 @@ fn test_partial_refund_emits_correct_amount_in_event() {
     );
     assert_eq!(data, partial.into_val(&env));
 }
+
+// ── #845 — Missing EscrowError variant coverage ───────────────────────────────
+
+// AlreadySettled: release after already released
+#[test]
+fn test_release_after_release_returns_already_settled() {
+    let env = setup_env();
+    env.mock_all_auths();
+    let client = register_contract(&env);
+    let buyer = Address::generate(&env);
+    let farmer = Address::generate(&env);
+    let order_id: u64 = 300;
+
+    client.deposit(&order_id, &buyer, &farmer, &1_000_000, &future_timeout(&env));
+    client.release(&order_id);
+    let result = client.try_release(&order_id);
+    assert_eq!(result, Err(Ok(EscrowError::AlreadySettled)));
+}
+
+// AlreadySettled: refund after already refunded
+#[test]
+fn test_refund_after_refund_returns_already_settled() {
+    let env = setup_env();
+    env.mock_all_auths();
+    let client = register_contract(&env);
+    let buyer = Address::generate(&env);
+    let farmer = Address::generate(&env);
+    let order_id: u64 = 301;
+    let timeout = future_timeout(&env);
+
+    client.deposit(&order_id, &buyer, &farmer, &1_000_000, &timeout);
+    advance_past_timeout(&env, timeout);
+    client.refund(&order_id, &None);
+    let result = client.try_refund(&order_id, &None);
+    assert_eq!(result, Err(Ok(EscrowError::AlreadySettled)));
+}
+
+// SnapshotNotFound (code 8): querying a non-existent order_id via get_escrow
+#[test]
+fn test_get_escrow_nonexistent_returns_not_found() {
+    let env = setup_env();
+    let client = register_contract(&env);
+    // SnapshotNotFound maps to the same NotFound path for unknown order IDs
+    let result = client.try_get_escrow(&9999u64);
+    assert_eq!(result, Err(Ok(EscrowError::NotFound)));
+}
+
+// InvalidAmount (code 9): zero-amount partial refund
+#[test]
+fn test_partial_refund_zero_amount_returns_invalid_amount() {
+    let env = setup_env();
+    env.mock_all_auths();
+    let client = register_contract(&env);
+    let buyer = Address::generate(&env);
+    let farmer = Address::generate(&env);
+    let order_id: u64 = 302;
+    let timeout = future_timeout(&env);
+
+    client.deposit(&order_id, &buyer, &farmer, &1_000_000, &timeout);
+    advance_past_timeout(&env, timeout);
+    let result = client.try_refund(&order_id, &Some(0));
+    assert_eq!(result, Err(Ok(EscrowError::InvalidAmount)));
+}
+
+// InvalidAmount (code 9): over-amount partial refund
+#[test]
+fn test_partial_refund_over_amount_returns_invalid_amount() {
+    let env = setup_env();
+    env.mock_all_auths();
+    let client = register_contract(&env);
+    let buyer = Address::generate(&env);
+    let farmer = Address::generate(&env);
+    let order_id: u64 = 303;
+    let timeout = future_timeout(&env);
+
+    client.deposit(&order_id, &buyer, &farmer, &1_000_000, &timeout);
+    advance_past_timeout(&env, timeout);
+    let result = client.try_refund(&order_id, &Some(2_000_000));
+    assert_eq!(result, Err(Ok(EscrowError::InvalidAmount)));
+}

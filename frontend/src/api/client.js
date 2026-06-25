@@ -230,6 +230,7 @@ export const api = {
   removeTrustline: (body) => request('/wallet/trustline', { method: 'DELETE', body }),
   getWalletAssets: () => request('/wallet/assets'),
   getPathEstimate: (params) => request(`/wallet/path-estimate${toQs(params)}`),
+  mergeWallet: (body) => request('/wallet/merge', { method: 'POST', body }),
   deleteAccount: (force) => request(`/auth/account${force ? '?force=true' : ''}`, { method: 'DELETE' }),
   getWalletStreamUrl: () => `/api/wallet/stream?token=${encodeURIComponent(accessToken || '')}`,
   getOrdersStreamUrl: () => `/api/orders/stream?token=${encodeURIComponent(accessToken || '')}`,
@@ -321,34 +322,8 @@ export const api = {
   getAddresses: () => request('/addresses'),
 
   placeOrderWithBudgetOverride: (body) => request('/orders', { method: 'POST', body: { ...body, budget_override_confirmed: true } }),
-  // params may include: status, page, limit
-  getOrderPaymentLink: (id) => request(`/orders/${id}/payment-link`),
-  getOrders:    (params = {})  => request(`/orders${toQs(params)}`),
-  getSales:     (params = {})  => request(`/orders/sales${toQs(params)}`),
-
-  submitReview: (body)         => request('/reviews', { method: 'POST', body }),
-
-  getWallet:      ()           => request('/wallet'),
-  getTransactions: ()          => request('/wallet/transactions'),
-  fundWallet:     ()           => request('/wallet/fund', { method: 'POST' }),
-  sendXLM:        (body)       => request('/wallet/send', { method: 'POST', body }),
-  addTrustline:   (body)       => request('/wallet/trustline', { method: 'POST', body }),
-  removeTrustline:(body)       => request('/wallet/trustline', { method: 'DELETE', body }),
-  getWalletAssets: ()          => request('/wallet/assets'),
-  getPathEstimate: (params)    => request(`/wallet/path-estimate${toQs(params)}`),
-  mergeWallet:    (body)       => request('/wallet/merge', { method: 'POST', body }),
-  deleteAccount:   (force)     => request(`/auth/account${force ? '?force=true' : ''}`, { method: 'DELETE' }),
-  // Returns the SSE URL with the token embedded (EventSource can't set headers)
-  getWalletStreamUrl: ()       => `/api/wallet/stream?token=${encodeURIComponent(accessToken || '')}`,
-  searchProducts: (q) => request(`/products/search?q=${encodeURIComponent(q)}`),
-
-  placeOrder: (body) => request('/orders', { method: 'POST', body }),
   getOrderStatus: (id) => request(`/orders/${id}/status`),
-  getOrderPaymentLink: (orderId) => request(`/orders/${orderId}/payment-link`),
   getOrderPaymentLinkQr: (orderId) => `/api/orders/${orderId}/payment-link/qr`,
-  getOrders: (params = {}) => request(`/orders${toQs(params)}`),
-  getSales: (params = {}) => request(`/orders/sales${toQs(params)}`),
-  updateOrderStatus: (id, status) => request(`/orders/${id}/status`, { method: 'PATCH', body: { status } }),
 
   getAuctions: () => request('/auctions'),
   getAuction: (id) => request(`/auctions/${id}`),
@@ -369,22 +344,6 @@ export const api = {
   setBudget: (monthly_budget) => request('/wallet/budget', { method: 'PATCH', body: { monthly_budget } }),
   withdrawFunds: (destination, amount) => request('/wallet/withdraw', { method: 'POST', body: { destination, amount } }),
   getContractEvents: (contractId, params = {}) => request(`/contracts/${contractId}/events${toQs(params)}`),
-  getWallet: function() { return request('/wallet'); },
-  getTransactions: function() { return request('/wallet/transactions'); },
-  fundWallet: function() { return request('/wallet/fund', { method: 'POST' }); },
-  getBudget: function() { return request('/wallet/budget'); },
-  setBudget: function(monthly_budget) { return request('/wallet/budget', { method: 'PATCH', body: { monthly_budget } }); },
-  withdrawFunds: function(destination, amount) { return request('/wallet/withdraw', { method: 'POST', body: { destination, amount } }); },
-  getBudget: function() { return request('/wallet/budget'); },
-  setBudget: function(monthly_budget) { return request('/wallet/budget', { method: 'PATCH', body: { monthly_budget } }); },
-  getProductShareMeta: function(id) { return request(`/products/${id}/share`); },
-  deleteProductImage: (productId, imageId) =>
-    request(`/products/${productId}/images/${imageId}`, { method: "DELETE" }),
-  reorderProductImages: (productId, order) =>
-    request(`/products/${productId}/images/reorder`, {
-      method: "PATCH",
-      body: { order },
-    }),
 
   // Subscriptions
   getSubscriptions: () => request('/subscriptions'),

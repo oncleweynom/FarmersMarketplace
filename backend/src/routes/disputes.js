@@ -3,85 +3,10 @@ const db = require('../db/schema');
 const auth = require('../middleware/auth');
 const validate = require('../middleware/validate');
 const { sendDisputeResolvedEmail } = require('../utils/mailer');
+const { burnRewardTokens } = require('../utils/stellar');
+const logger = require('../logger');
 
 // POST /api/disputes — buyer files a dispute on a paid order
-router.post('/', auth, validate.dispute, (req, res) => {
-  if (req.user.role !== 'buyer')
-    return res.status(403).json({ error: 'Only buyers can file disputes' });
-
-  const order_id = parseInt(req.body.order_id, 10);
-  const { reason } = req.body;
-
-  const order = db
-    .prepare('SELECT * FROM orders WHERE id = ? AND buyer_id = ?')
-    .get(order_id, req.user.id);
-
-  if (!order) return res.status(404).json({ error: 'Order not found' });
-  if (order.status !== 'paid')
-    return res.status(400).json({ error: 'Disputes can only be filed on paid orders' });
-
-  const existing = db.prepare('SELECT id FROM disputes WHERE order_id = ?').get(order_id);
-  if (existing) return res.status(409).json({ error: 'A dispute already exists for this order' });
-
-  const result = db
-    .prepare('INSERT INTO disputes (order_id, buyer_id, reason) VALUES (?, ?, ?)')
-    .run(order_id, req.user.id, reason.trim());
-
-  res.status(201).json({ id: result.lastInsertRowid, order_id, status: 'open', message: 'Dispute filed' });
-});
-
-// GET /api/disputes — admin lists all disputes
-router.get('/', auth, (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
-
-  const disputes = db
-    .prepare(
-      `SELECT d.*, u.name as buyer_name, u.email as buyer_email,
-              o.total_price, o.quantity, p.name as product_name
-       FROM disputes d
-       JOIN users u ON d.buyer_id = u.id
-       JOIN orders o ON d.order_id = o.id
-       JOIN products p ON o.product_id = p.id
-       ORDER BY d.created_at DESC`
-    )
-    .all();
-
-  res.json(disputes);
-});
-
-// PATCH /api/disputes/:id — admin resolves a dispute
-router.patch('/:id', auth, validate.resolveDispute, async (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
-
-  const dispute = db.prepare('SELECT * FROM disputes WHERE id = ?').get(req.params.id);
-  if (!dispute) return res.status(404).json({ error: 'Dispute not found' });
-
-  const { status, resolution } = req.body;
-
-  const transitions = { open: ['under_review'], under_review: ['resolved'], resolved: [] };
-  if (!transitions[dispute.status].includes(status))
-    return res.status(400).json({ error: `Cannot transition from '${dispute.status}' to '${status}'` });
-
-  if (status === 'resolved' && (!resolution || !resolution.trim()))
-    return res.status(400).json({ error: 'A resolution note is required when resolving a dispute' });
-
-  db.prepare('UPDATE disputes SET status = ?, resolution = ? WHERE id = ?').run(
-    status,
-    resolution ? resolution.trim() : dispute.resolution,
-    dispute.id
-  );
-
-  if (status === 'resolved') {
-    const buyer = db.prepare('SELECT * FROM users WHERE id = ?').get(dispute.buyer_id);
-    const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(dispute.order_id);
-    const product = db.prepare('SELECT * FROM products WHERE id = ?').get(order.product_id);
-
-    sendDisputeResolvedEmail({
-      dispute: { ...dispute, resolution: resolution.trim() },
-      order,
-      product,
-      buyer,
-    }).catch((err) => console.error('Dispute email failed:', err.message));
 router.post('/', auth, validate.dispute, async (req, res, next) => {
   try {
     if (req.user.role !== 'buyer')
@@ -118,7 +43,7 @@ router.post('/', auth, validate.dispute, async (req, res, next) => {
   }
 });
 
-// GET /api/disputes — admin lists all disputes (with order + buyer info)
+// GET /api/disputes — admin lists all disputes
 router.get('/', auth, async (req, res, next) => {
   try {
     if (req.user.role !== 'admin')
@@ -172,17 +97,32 @@ router.patch('/:id', auth, validate.resolveDispute, async (req, res, next) => {
         db.query('SELECT * FROM users WHERE id = $1', [dispute.buyer_id]),
         db.query('SELECT * FROM orders WHERE id = $1', [dispute.order_id]),
       ]);
+      const buyer = buyerRows[0];
+      const order = orderRows[0];
       const { rows: productRows } = await db.query(
         'SELECT * FROM products WHERE id = $1',
-        [orderRows[0].product_id]
+        [order.product_id]
       );
 
       sendDisputeResolvedEmail({
         dispute: { ...dispute, resolution: resolution.trim() },
-        order: orderRows[0],
+        order,
         product: productRows[0],
-        buyer: buyerRows[0],
-      }).catch((err) => console.error('Dispute email failed:', err.message));
+        buyer,
+      }).catch((e) => logger.error('Dispute email failed:', e.message));
+
+      // #847 — burn reward tokens earned for this order (non-fatal)
+      if (buyer?.stellar_public_key) {
+        const burnAmount = Math.floor(Number(order.total_price));
+        if (burnAmount > 0) {
+          try {
+            burnRewardTokens(buyer.stellar_public_key, burnAmount)
+              .catch((e) => logger.warn('[Rewards] Burn failed on dispute resolve (non-fatal):', { error: e.message }));
+          } catch (e) {
+            logger.warn('[Rewards] Burn failed on dispute resolve (non-fatal):', { error: e.message });
+          }
+        }
+      }
     }
 
     res.json({ id: dispute.id, status, message: 'Dispute updated' });

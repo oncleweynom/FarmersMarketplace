@@ -171,7 +171,6 @@ const s = {
 const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 const MAX_SIZE_MB = 5;
 const MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024;
-const MAX_IMAGES = 6;
 
 const STATUS_COLOR = {
   pending: '#e67e22',
@@ -553,11 +552,6 @@ export default function Dashboard() {
 
   const [salesExportFrom, setSalesExportFrom] = React.useState('');
   const [salesExportTo, setSalesExportTo] = React.useState('');
-
-  function triggerExport(path) {
-    const token = localStorage.getItem('token');
-    window.location.href = `/api${path}&_token=${encodeURIComponent(token || '')}`;
-  }
 
   function exportProducts(format) {
     const token = localStorage.getItem('token');

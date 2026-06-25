@@ -4,6 +4,7 @@ const logger = require('../logger');
 const db = require('../db/schema');
 const auth = require('../middleware/auth');
 const validate = require('../middleware/validate');
+const requireEmailVerified = require('../middleware/requireEmailVerified');
 const createPerUserRateLimiter = require('../middleware/rateLimitPerUser');
 
 const orderRateLimit = createPerUserRateLimiter(
@@ -203,7 +204,7 @@ async function handleBundleOrder(req, res, bundle_id, address_id, coupon_code, u
       discount: discount > 0 ? discount : undefined,
       coupon: appliedCoupon ? { code: appliedCoupon.code, discount_type: appliedCoupon.discount_type } : undefined,
     };
-    if (idempotencyKey) await cacheResponse(idempotencyKey, responseData);
+    if (idempotencyKey) await cacheResponse(idempotencyKey, { ...responseData, _status: 200 });
     return res.json(responseData);
   } catch (e) {
     await db.query('BEGIN');
@@ -215,7 +216,7 @@ async function handleBundleOrder(req, res, bundle_id, address_id, coupon_code, u
     }
     await db.query('COMMIT');
     const errorData = { success: false, message: 'Payment failed: ' + e.message, code: 'payment_failed', orderIds };
-    if (idempotencyKey) await cacheResponse(idempotencyKey, errorData);
+    if (idempotencyKey) await cacheResponse(idempotencyKey, { ...errorData, _status: 402 });
     return res.status(402).json(errorData);
   }
 }
@@ -229,15 +230,25 @@ async function handleBundleOrder(req, res, bundle_id, address_id, coupon_code, u
  *     security:
  *       - bearerAuth: []
  */
+const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+router.post('/', auth, requireEmailVerified, validate.order, async (req, res) => {
 router.post('/', auth, orderRateLimit, validate.order, async (req, res) => {
   if (req.user.role !== 'buyer') return err(res, 403, 'Only buyers can place orders', 'forbidden');
 
   const { product_id, quantity, address_id, coupon_code, use_soroban_escrow, custom_price, weight, source_asset, bundle_id } = req.body;
   const idempotencyKey = req.headers['x-idempotency-key'];
 
-  if (idempotencyKey) {
-    const cached = getCachedResponse(idempotencyKey);
-    if (cached) return res.status(cached.success ? 200 : 402).json(cached);
+  if (!idempotencyKey || !UUID_V4_RE.test(idempotencyKey)) {
+    return err(res, 400, 'X-Idempotency-Key header must be a valid UUID v4', 'invalid_idempotency_key');
+  }
+
+  try {
+    const cached = await getCachedResponse(idempotencyKey);
+    if (cached) return res.status(cached._status || (cached.success ? 201 : 402)).json(cached);
+  } catch (e) {
+    logger.error('[orders] idempotency cache error', { error: e.message });
+    return res.status(503).json({ success: false, error: 'Service temporarily unavailable', code: 'idempotency_unavailable' });
   }
 
   if (address_id) {
@@ -395,7 +406,7 @@ router.post('/', auth, orderRateLimit, validate.order, async (req, res) => {
       await db.query('INSERT INTO coupon_uses (coupon_id, user_id) VALUES ($1, $2)', [appliedCoupon.id, req.user.id]);
     }
     const responseData = { success: true, orderId, status: 'pending', totalPrice, message: 'Order created for SEP-0007 payment' };
-    if (idempotencyKey) cacheResponse(idempotencyKey, responseData);
+    if (idempotencyKey) cacheResponse(idempotencyKey, { ...responseData, _status: 200 });
     return res.json(responseData);
   }
 
@@ -415,6 +426,7 @@ router.post('/', auth, orderRateLimit, validate.order, async (req, res) => {
         farmerPublicKey: product.farmer_wallet,
         amount: totalPrice,
         timeoutUnix,
+        userId: req.user.id,
       });
       txHash = result.txHash;
       balanceId = `soroban:${orderId}`;
@@ -510,8 +522,12 @@ router.post('/', auth, orderRateLimit, validate.order, async (req, res) => {
 
     const rewardAmount = Math.floor(totalPrice);
     if (rewardAmount > 0 && buyer.stellar_public_key) {
-      mintRewardTokens(buyer.stellar_public_key, rewardAmount)
-        .catch((e) => logger.error('[Rewards] Failed to mint tokens:', { error: e.message }));
+      try {
+        mintRewardTokens(buyer.stellar_public_key, rewardAmount)
+          .catch((e) => logger.warn('[Rewards] Mint failed (non-fatal):', { error: e.message }));
+      } catch (e) {
+        logger.warn('[Rewards] Mint failed (non-fatal):', { error: e.message });
+      }
     }
 
     const feeInfo = getPlatformFeeInfo(totalPrice);
@@ -531,8 +547,8 @@ router.post('/', auth, orderRateLimit, validate.order, async (req, res) => {
       claimableBalanceId: balanceId,
       sourceAsset: usePathPayment ? source_asset.code : 'XLM',
     };
-    if (idempotencyKey) await cacheResponse(idempotencyKey, responseData);
-    return res.json(responseData);
+    if (idempotencyKey) await cacheResponse(idempotencyKey, { ...responseData, _status: 201 });
+    return res.status(201).json(responseData);
   } catch (e) {
     await db.query('UPDATE orders SET status = $1 WHERE id = $2', ['failed', orderId]);
     await db.query('UPDATE products SET quantity = quantity + $1 WHERE id = $2', [quantity, product_id]);
@@ -541,7 +557,7 @@ router.post('/', auth, orderRateLimit, validate.order, async (req, res) => {
     if (e.code === 'account_not_found')
       return res.status(402).json({ success: false, message: 'Please fund your wallet before purchasing', code: 'unfunded_account', orderId });
     const errorData = { success: false, message: 'Payment failed: ' + e.message, code: 'payment_failed', orderId };
-    if (idempotencyKey) await cacheResponse(idempotencyKey, errorData);
+    if (idempotencyKey) await cacheResponse(idempotencyKey, { ...errorData, _status: 402 });
     return res.status(402).json(errorData);
   }
 });
@@ -663,8 +679,12 @@ router.patch('/:id/status', auth, validate.updateOrderStatus, async (req, res) =
   if (status === 'completed' && order.buyer_stellar_address) {
     const rewardAmount = parseInt(process.env.REWARD_TOKENS_PER_ORDER || '100', 10);
     if (rewardAmount > 0) {
-      mintRewardTokens(order.buyer_stellar_address, rewardAmount)
-        .catch((e) => logger.error(`Failed to mint reward tokens for order ${order.id}:`, { error: e.message }));
+      try {
+        mintRewardTokens(order.buyer_stellar_address, rewardAmount)
+          .catch((e) => logger.warn(`[Rewards] Mint failed for order ${order.id} (non-fatal):`, { error: e.message }));
+      } catch (e) {
+        logger.warn(`[Rewards] Mint failed for order ${order.id} (non-fatal):`, { error: e.message });
+      }
     }
   }
 
@@ -714,6 +734,7 @@ router.post('/:id/escrow', auth, async (req, res) => {
       farmerPublicKey: order.farmer_wallet,
       amount: order.total_price,
       timeoutUnix,
+      userId: req.user.id,
     });
     await db.query(
       'UPDATE orders SET status = $1, stellar_tx_hash = $2, escrow_balance_id = $3, escrow_status = $4 WHERE id = $5',
@@ -736,7 +757,7 @@ router.post('/:id/dispute', auth, async (req, res) => {
 
   const { rows: uRows } = await db.query('SELECT stellar_secret_key FROM users WHERE id = $1', [req.user.id]);
   try {
-    const result = await invokeEscrowContract({ action: 'dispute', senderSecret: uRows[0].stellar_secret_key, orderId: Number(order.id) });
+    const result = await invokeEscrowContract({ action: 'dispute', senderSecret: uRows[0].stellar_secret_key, orderId: Number(order.id), userId: req.user.id });
     return res.json({ success: true, txHash: result.txHash });
   } catch (e) {
     return res.status(402).json({ success: false, message: e.message });
@@ -753,7 +774,7 @@ router.post('/:id/refund', auth, async (req, res) => {
 
   const { rows: uRows } = await db.query('SELECT stellar_secret_key FROM users WHERE id = $1', [req.user.id]);
   try {
-    const result = await invokeEscrowContract({ action: 'refund', senderSecret: uRows[0].stellar_secret_key, orderId: Number(order.id) });
+    const result = await invokeEscrowContract({ action: 'refund', senderSecret: uRows[0].stellar_secret_key, orderId: Number(order.id), userId: req.user.id });
     await db.query('UPDATE orders SET escrow_status = $1, stellar_tx_hash = $2 WHERE id = $3', ['refunded', result.txHash, order.id]);
     return res.json({ success: true, txHash: result.txHash });
   } catch (e) {
