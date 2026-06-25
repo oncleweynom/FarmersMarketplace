@@ -7,6 +7,7 @@ import { getStellarErrorMessage } from '../utils/stellarErrors';
 import { getErrorMessage } from '../utils/errorMessages';
 import { showToast } from '../utils/toast';
 import { useXlmRate } from '../utils/useXlmRate';
+import { calculateHaversineDistance, formatDistanceLabel } from '../utils/distance';
 import StarRating from '../components/StarRating';
 import Spinner from '../components/Spinner';
 import FlashSaleCountdown from '../components/FlashSaleCountdown';
@@ -122,8 +123,64 @@ export default function ProductDetail() {
   const [waitlistPosition, setWaitlistPosition] = useState(null);
   const [waitlistLoading, setWaitlistLoading] = useState(false);
   const [waitlistError, setWaitlistError] = useState('');
+  const [buyerLocation, setBuyerLocation] = useState(null);
+  const [distanceLabel, setDistanceLabel] = useState('');
+  const [distanceLoading, setDistanceLoading] = useState(false);
+  const [distanceError, setDistanceError] = useState('');
 
-   // Price tiers state
+   const BUYER_LOCATION_KEY = 'buyer_location';
+
+  const loadBuyerLocation = () => {
+    try {
+      const raw = sessionStorage.getItem(BUYER_LOCATION_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (typeof parsed?.lat === 'number' && typeof parsed?.lng === 'number') {
+        return parsed;
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  };
+
+  const cacheBuyerLocation = (loc) => {
+    try {
+      sessionStorage.setItem(BUYER_LOCATION_KEY, JSON.stringify(loc));
+    } catch {
+      // ignore
+    }
+  };
+
+  const updateDistance = (location, productItem) => {
+    if (!location || !productItem?.farm_lat || !productItem?.farm_lng) return;
+    const distanceKm = calculateHaversineDistance(location.lat, location.lng, Number(productItem.farm_lat), Number(productItem.farm_lng));
+    setDistanceLabel(formatDistanceLabel(distanceKm));
+  };
+
+  const requestDistance = () => {
+    if (!navigator.geolocation) {
+      setDistanceError('Geolocation is not available');
+      return;
+    }
+    setDistanceLoading(true);
+    setDistanceError('');
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const location = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        cacheBuyerLocation(location);
+        setBuyerLocation(location);
+        updateDistance(location, product);
+        setDistanceLoading(false);
+      },
+      (err) => {
+        setDistanceLoading(false);
+        setDistanceError(err.code === 1 ? 'Permission denied' : 'Unable to determine location');
+      }
+    );
+  };
+
+  // Price tiers state
   const [tiers, setTiers] = useState([]);
   // Price history state
   const [priceHistory, setPriceHistory] = useState([]);
@@ -248,6 +305,15 @@ export default function ProductDetail() {
       else if (addrs.length > 0) setSelectedAddressId(addrs[0].id);
     }).catch(() => {});
   }, [user]);
+
+  useEffect(() => {
+    if (!product) return;
+    const cached = loadBuyerLocation();
+    if (cached) {
+      setBuyerLocation(cached);
+      updateDistance(cached, product);
+    }
+  }, [product]);
 
   useEffect(() => {
     if (user?.role !== 'buyer') return;
@@ -805,6 +871,33 @@ export default function ProductDetail() {
                 {product.farmer_name}
               </span>
             </div>
+            {product.farm_lat != null && product.farm_lng != null && (
+              <div style={{ fontSize: 13, color: '#666', marginTop: 4 }}>
+                {distanceLabel ? (
+                  <span>{distanceLabel}</span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={requestDistance}
+                    disabled={distanceLoading}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: '#2d6a4f',
+                      textDecoration: 'underline',
+                      cursor: 'pointer',
+                      padding: 0,
+                      fontSize: 13,
+                    }}
+                  >
+                    {distanceLoading ? 'Locating…' : 'Show distance'}
+                  </button>
+                )}
+                {distanceError && (
+                  <span style={{ color: '#c0392b', marginLeft: 10 }}>{distanceError}</span>
+                )}
+              </div>
+            )}
             {product.harvest_batch_code && (
               <div style={{ fontSize: 14, color: '#555', marginTop: 6 }}>
                 <span style={{ fontWeight: 600, color: '#2d6a4f' }}>Harvest batch:</span>{' '}

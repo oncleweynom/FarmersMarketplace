@@ -354,7 +354,7 @@ function getFreshnessBadge(bestBefore) {
 const SCROLL_KEY = 'marketplace_scroll';
 
 export default function Marketplace() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [products, setProducts] = useState([]);
   const [auctions, setAuctions] = useState([]);
   const [filters, setFilters] = useState(EMPTY_FILTERS);
@@ -376,6 +376,13 @@ export default function Marketplace() {
   const { isFavorited, toggleFavorite } = useFavorites();
   const { products: compareProducts, toggleProduct, isCompared, clearProducts } = useCompare();
   const { usd } = useXlmRate();
+
+  const formatPreorderDate = (dateString) => {
+    if (!dateString) return '';
+    const date = new Date(dateString);
+    if (Number.isNaN(date.getTime())) return dateString;
+    return date.toLocaleDateString(i18n.language, { year: 'numeric', month: 'short', day: 'numeric' });
+  };
 
   const debouncedSearch = useDebounce(filters.search, 300);
   const debouncedSeller = useDebounce(filters.seller, 300);
@@ -1082,10 +1089,14 @@ export default function Marketplace() {
                 </div>
               ) : null}
               {p.is_preorder ? (
-                <div style={s.preorderBadge}>
-                  Pre-Order
+                <div
+                  style={s.preorderBadge}
+                  title="This is a pre-order. Payment is held in escrow until dispatch."
+                  aria-label="Pre-order product"
+                >
+                  Pre-order
                   {p.preorder_delivery_date
-                    ? ` · Delivers ${p.preorder_delivery_date}`
+                    ? ` · Ships by ${formatPreorderDate(p.preorder_delivery_date)}`
                     : ""}
                 </div>
               ) : null}

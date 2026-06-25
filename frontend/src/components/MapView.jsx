@@ -57,6 +57,7 @@ function RecenterMap({ center }) {
   return null;
 }
 
+export default function MapView({ products = [], lat, lng, farmerName, onFarmerClick }) {
 // Custom icon for the user's current location marker
 const userIcon = L.divIcon({
   className: '',
@@ -144,6 +145,28 @@ export default function MapView({ products = [], onFarmerClick, userLat, userLng
             <Marker position={[userLat, userLng]} icon={userIcon}>
               <Popup>
                 <div style={s.popup}>
+                  {group.products.length > 0 ? (
+                    group.products.map((p) => (
+                      <div
+                        key={p.id}
+                        style={{
+                          marginBottom: group.products.length > 1 ? 12 : 0,
+                          paddingBottom: group.products.length > 1 ? 12 : 0,
+                          borderBottom: group.products.length > 1 ? '1px solid #eee' : 'none',
+                        }}
+                      >
+                        <div style={s.name}>{p.name}</div>
+                        <div style={s.price}>{p.price} XLM / {p.unit}</div>
+                        <div style={s.farmer}>🌾 {p.farmer_name}</div>
+                        {p.farmer_farm_address && <div style={s.address}>📍 {p.farmer_farm_address}</div>}
+                        <button style={s.btn} onClick={() => navigate(`/products/${p.id}`)}>View &amp; Buy</button>
+                      </div>
+                    ))
+                  ) : (
+                    <div>
+                      <div style={s.name}>{group.farmerName || 'Farm location'}</div>
+                      <div style={s.farmer}>🌾 {group.farmerName || 'Farmer'}</div>
+                    </div>
                   <div style={{ ...s.name, color: '#2d6a4f' }}>📍 Your location</div>
                   {radius && (
                     <div style={{ fontSize: 12, color: '#888' }}>Showing farms within {radius} km</div>
@@ -151,6 +174,20 @@ export default function MapView({ products = [], onFarmerClick, userLat, userLng
                 </div>
               </Popup>
             </Marker>
+            {group.products.some((p) => p.delivery_radius && p.origin_lat != null && p.origin_lng != null) &&
+              group.products.map((p) => {
+                if (!p.delivery_radius || p.origin_lat == null || p.origin_lng == null) return null;
+                const radiusKm = p.delivery_radius > 1000 ? p.delivery_radius / 1000 : p.delivery_radius;
+                return (
+                  <Circle
+                    key={`geo-${p.id}`}
+                    center={[p.origin_lat, p.origin_lng]}
+                    radius={radiusKm * 1000}
+                    pathOptions={{ color: '#2d6a4f', weight: 2, opacity: 0.5, fillColor: '#d8f3dc', fillOpacity: 0.1 }}
+                  />
+                );
+              })}
+          </React.Fragment>
             {radius && Number(radius) > 0 && (
               <Circle
                 center={[userLat, userLng]}

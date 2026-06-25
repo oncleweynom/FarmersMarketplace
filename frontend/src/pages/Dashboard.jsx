@@ -5,6 +5,7 @@ import { useXlmRate } from '../utils/useXlmRate';
 import { useAuth } from '../context/AuthContext';
 import { useTranslation } from 'react-i18next';
 import { getErrorMessage } from '../utils/errorMessages';
+import { showToast } from '../utils/toast';
 import ProductForm from '../components/dashboard/ProductForm';
 import InlineEditField from '../components/dashboard/InlineEditField';
 import { showToast } from '../utils/toast';
@@ -191,6 +192,7 @@ const STATUS_ICON = {
   refunded: '↩️',
 };
 const FARMER_STATUSES = ['processing', 'shipped', 'delivered', 'cancelled'];
+const LOW_STOCK_THRESHOLD = Number(import.meta.env.VITE_LOW_STOCK_THRESHOLD || 5);
 
 export default function Dashboard() {
   const { user } = useAuth();
@@ -200,6 +202,7 @@ export default function Dashboard() {
   const [inlineEditing, setInlineEditing] = useState({}); // { [productId_field]: true }
   const [restockVals, setRestockVals] = useState({});
   const [harvestBatches, setHarvestBatches] = useState([]);
+  const productsRef = useRef([]);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [sales, setSales] = useState([]);
   const [salesMsg, setSalesMsg] = useState({});
@@ -412,6 +415,7 @@ export default function Dashboard() {
         forecastMap[item.product_id] = item;
       });
       setForecastByProduct(forecastMap);
+      productsRef.current = productsRes.data ?? productsRes;
 
       // Waitlist analytics
       const waitlistRes = await api.getWaitlistAnalytics().catch(() => ({ data: [] }));
@@ -451,8 +455,36 @@ export default function Dashboard() {
   }
 
   useEffect(() => {
+    productsRef.current = products;
+  }, [products]);
+
+  useEffect(() => {
     load();
   }, [user?.id]);
+
+  useEffect(() => {
+    if (user?.role !== 'farmer') return;
+    const interval = setInterval(async () => {
+      try {
+        const res = await api.getMyProducts();
+        const latestProducts = res.data ?? res;
+        const previousProducts = productsRef.current;
+        latestProducts.forEach((latest) => {
+          const prev = previousProducts.find((p) => p.id === latest.id);
+          const latestQty = Number(latest.quantity ?? 0);
+          const prevQty = prev ? Number(prev.quantity ?? 0) : LOW_STOCK_THRESHOLD + 1;
+          if (prev && latestQty <= LOW_STOCK_THRESHOLD && prevQty > LOW_STOCK_THRESHOLD) {
+            showToast(`Low stock: ${latest.name} has only ${latestQty} left.`, 'warning', 8000);
+          }
+        });
+        setProducts(latestProducts);
+      } catch {
+        // ignore polling failures
+      }
+    }, 10000);
+
+    return () => clearInterval(interval);
+  }, [user]);
 
   async function handleProfileSave(e) {
     e.preventDefault();
@@ -1117,6 +1149,9 @@ export default function Dashboard() {
                         onError={(msg) => showToast(msg, 'error')}
                       />
                     </div>
+                    {Number(p.quantity) <= 0 && (
+                      <div style={s.outOfStockBadge}>Out of stock</div>
+                    )}
                     {(p.is_preorder || p.is_preorder === 1) && p.preorder_delivery_date && (
                       <div style={{ fontSize: 12, color: '#e07b00', marginTop: 2 }}>
                         📅 Delivery: {p.preorder_delivery_date}
