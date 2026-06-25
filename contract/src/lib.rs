@@ -14,7 +14,7 @@
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, contracterror, symbol_short,
-    Address, Env,
+    Address, Env, Vec,
 };
 
 // TTL constants (in ledgers; ~5 s/ledger on Stellar)
@@ -64,6 +64,8 @@ pub enum Role {
 pub enum DataKey {
     Escrow(u64),
     Role(Address, Role),
+    /// Ordered list of all members that currently hold a given role. (#401)
+    RoleMembers(Role),
 }
 
 #[contracttype]
@@ -323,6 +325,7 @@ impl EscrowContract {
     /// Grants `role` to `account` (#687).
     /// Only a PLATFORM holder may grant roles.
     /// Bootstrap: first grant of Role::Platform is open (no existing platform).
+    /// Also appends `account` to the `RoleMembers(role)` list (#401).
     pub fn grant_role(env: Env, caller: Address, account: Address, role: Role) {
         caller.require_auth();
 
@@ -338,13 +341,27 @@ impl EscrowContract {
             panic!("only a Platform role holder can grant roles");
         }
 
-        let key = DataKey::Role(account, role);
+        let key = DataKey::Role(account.clone(), role.clone());
         env.storage().persistent().set(&key, &true);
         env.storage().persistent().extend_ttl(&key, TTL_MIN, TTL_MAX);
+
+        // Maintain the enumerable members list for this role (#401).
+        let members_key = DataKey::RoleMembers(role.clone());
+        let mut members: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&members_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        if !members.contains(&account) {
+            members.push_back(account);
+            env.storage().persistent().set(&members_key, &members);
+            env.storage().persistent().extend_ttl(&members_key, TTL_MIN, TTL_MAX);
+        }
     }
 
     /// Revokes `role` from `account` (#687).
     /// Only a PLATFORM holder may call this.
+    /// Also removes `account` from the `RoleMembers(role)` list (#401).
     pub fn revoke_role(env: Env, caller: Address, account: Address, role: Role) {
         caller.require_auth();
 
@@ -359,11 +376,32 @@ impl EscrowContract {
             panic!("only a Platform role holder can revoke roles");
         }
 
-        let key = DataKey::Role(account, role);
+        let key = DataKey::Role(account.clone(), role.clone());
         env.storage().persistent().remove(&key);
+
+        // Remove from the enumerable members list (#401).
+        let members_key = DataKey::RoleMembers(role.clone());
+        let mut members: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&members_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        if let Some(idx) = members.iter().position(|a| a == account) {
+            members.remove(idx as u32);
+            env.storage().persistent().set(&members_key, &members);
+        }
     }
 
-    /// Returns true if `account` holds `role` (#687).
+    /// Returns all addresses that currently hold `role`. No auth required. (#401)
+    pub fn get_role_members(env: Env, role: Role) -> Vec<Address> {
+        let members_key = DataKey::RoleMembers(role);
+        env.storage()
+            .persistent()
+            .get(&members_key)
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Returns true if `account` holds `role`. No auth required. (#401, #687)
     pub fn has_role(env: Env, account: Address, role: Role) -> bool {
         let key = DataKey::Role(account, role);
         env.storage().persistent().get(&key).unwrap_or(false)
