@@ -266,9 +266,10 @@ function addDeprecationHeaders(req, res, next) {
 // ============================================================================
 
 router.get('/sitemap.xml', require('./sitemap'));
-router.get('/robots.txt', (_, res) => {
+router.get('/robots.txt', (req, res) => {
+  const host = process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
   res.type('text/plain').send(
-    `User-agent: *\nAllow: /\nDisallow: /api/\nSitemap: ${process.env.FRONTEND_URL || 'http://localhost:3000'}/sitemap.xml`
+    `User-agent: *\nAllow: /\nDisallow: /api/\nSitemap: ${host}/sitemap.xml`
   );
 });
 
