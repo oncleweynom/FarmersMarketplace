@@ -68,6 +68,9 @@ const s = {
   thumb:         { width: 64, height: 64, objectFit: 'cover', borderRadius: 6, cursor: 'pointer', border: '2px solid transparent', flexShrink: 0 },
   thumbActive:   { border: '2px solid #2d6a4f' },
   navBtn:        { background: 'rgba(0,0,0,0.35)', color: '#fff', border: 'none', borderRadius: '50%', width: 32, height: 32, cursor: 'pointer', fontSize: 16, display: 'flex', alignItems: 'center', justifyContent: 'center' },
+  dotRow:        { display: 'flex', justifyContent: 'center', gap: 6, marginTop: 8 },
+  dot:           { width: 8, height: 8, borderRadius: '50%', background: '#ccc', border: 'none', padding: 0, cursor: 'pointer' },
+  dotActive:     { background: '#2d6a4f' },
 };
 
 function CopyButton({ url }) {
@@ -364,6 +367,37 @@ export default function ProductDetail() {
     return () => es.close();
   }, [id]);
 
+  // Load auction details if product is auction
+  useEffect(() => {
+    if (!product || !product.type || product.type !== 'auction') return;
+    api.getAuction(product.id).then(res => {
+      setAuctionData(res.data ?? res);
+    }).catch(() => setAuctionData(null));
+  }, [product?.id, product?.type]);
+
+  // Countdown timer for auction
+  useEffect(() => {
+    if (!auctionData || !auctionData.auction_end) return;
+    const tick = () => {
+      const now = Date.now();
+      const end = new Date(auctionData.auction_end).getTime();
+      const diff = Math.max(0, end - now);
+      if (diff <= 0) {
+        setAuctionCountdown({ days: 0, hours: 0, mins: 0, secs: 0, ended: true });
+        return;
+      }
+      const secs = Math.floor(diff / 1000);
+      const days = Math.floor(secs / 86400);
+      const hours = Math.floor((secs % 86400) / 3600);
+      const mins = Math.floor((secs % 3600) / 60);
+      const s = secs % 60;
+      setAuctionCountdown({ days, hours, mins, secs: s, ended: false });
+    };
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [auctionData?.auction_end]);
+
   if (!product) return <Spinner />;
 
   // Clamp activeImg to valid range
@@ -574,37 +608,6 @@ export default function ProductDetail() {
     }
   }
 
-  // Load auction details if product is auction
-  useEffect(() => {
-    if (!product || !product.type || product.type !== 'auction') return;
-    api.getAuction(product.id).then(res => {
-      setAuctionData(res.data ?? res);
-    }).catch(() => setAuctionData(null));
-  }, [product?.id, product?.type]);
-
-  // Countdown timer for auction
-  useEffect(() => {
-    if (!auctionData || !auctionData.auction_end) return;
-    const tick = () => {
-      const now = Date.now();
-      const end = new Date(auctionData.auction_end).getTime();
-      const diff = Math.max(0, end - now);
-      if (diff <= 0) {
-        setAuctionCountdown({ days: 0, hours: 0, mins: 0, secs: 0, ended: true });
-        return;
-      }
-      const secs = Math.floor(diff / 1000);
-      const days = Math.floor(secs / 86400);
-      const hours = Math.floor((secs % 86400) / 3600);
-      const mins = Math.floor((secs % 3600) / 60);
-      const s = secs % 60;
-      setAuctionCountdown({ days, hours, mins, secs: s, ended: false });
-    };
-    tick();
-    const timer = setInterval(tick, 1000);
-    return () => clearInterval(timer);
-  }, [auctionData?.auction_end]);
-
   async function handlePlaceBid() {
     setBidError('');
     setBidSuccess(false);
@@ -731,12 +734,25 @@ export default function ProductDetail() {
         {/* Image gallery */}
 
         {images.length > 0 ? (
-          <div style={{ marginBottom: 16 }}>
+          <div
+            style={{ marginBottom: 16 }}
+            role="region"
+            aria-label={t('productDetail.imageGallery', 'Image gallery')}
+            tabIndex={0}
+            onKeyDown={images.length > 1 ? (e) => {
+              if (e.key === 'ArrowLeft') { e.preventDefault(); setActiveImg(i => (i - 1 + images.length) % images.length); }
+              else if (e.key === 'ArrowRight') { e.preventDefault(); setActiveImg(i => (i + 1) % images.length); }
+            } : undefined}
+          >
             <div style={{ position: 'relative' }}>
               <div style={s.galleryMainContainer}
                 onMouseEnter={e => e.currentTarget.querySelector('img').style.transform = 'scale(1.35)'}
                 onMouseLeave={e => e.currentTarget.querySelector('img').style.transform = ''}>
-                <img src={images[safeActiveImg].url} alt={`${product.name} photo ${safeActiveImg + 1}`} style={s.galleryMain} />
+                <img
+                  src={images[safeActiveImg].url}
+                  alt={`${product.name} photo ${safeActiveImg + 1}`}
+                  style={s.galleryMain}
+                />
               </div>
               {images.length > 1 && (
                 <div style={{ position: 'absolute', top: '50%', transform: 'translateY(-50%)', width: '100%', display: 'flex', justifyContent: 'space-between', padding: '0 8px', boxSizing: 'border-box', pointerEvents: 'none' }}>
@@ -746,12 +762,31 @@ export default function ProductDetail() {
               )}
             </div>
             {images.length > 1 && (
-              <div style={s.thumbRow}>
-                {images.map((img, i) => (
-                  <img key={img.id} src={img.url} alt={t('productDetail.thumbnail', { n: i + 1 })}
-                    style={{ ...s.thumb, ...(i === safeActiveImg ? s.thumbActive : {}) }} onClick={() => setActiveImg(i)} />
-                ))}
-              </div>
+              <>
+                <div style={s.thumbRow}>
+                  {images.map((img, i) => (
+                    <img
+                      key={img.id}
+                      src={img.url}
+                      alt={t('productDetail.thumbnail', { n: i + 1 })}
+                      loading="lazy"
+                      style={{ ...s.thumb, ...(i === safeActiveImg ? s.thumbActive : {}) }}
+                      onClick={() => setActiveImg(i)}
+                    />
+                  ))}
+                </div>
+                <div style={s.dotRow} aria-hidden="true">
+                  {images.map((_, i) => (
+                    <button
+                      key={i}
+                      style={{ ...s.dot, ...(i === safeActiveImg ? s.dotActive : {}) }}
+                      onClick={() => setActiveImg(i)}
+                      tabIndex={-1}
+                      aria-label={t('productDetail.thumbnail', { n: i + 1 })}
+                    />
+                  ))}
+                </div>
+              </>
             )}
           </div>
         ) : product.image_url ? (
@@ -884,15 +919,51 @@ export default function ProductDetail() {
         ) : null}
         {isFlashSaleActive ? (
           <>
+            {/* Prominent flash sale banner — amber background meets WCAG AA at 4.5:1 contrast */}
+            <div
+              role="region"
+              aria-label={t('productDetail.flashSaleBanner')}
+              style={{
+                background: '#fbbf24',
+                border: '2px solid #f59e0b',
+                borderRadius: 10,
+                padding: '14px 18px',
+                marginBottom: 16,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 6,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 15, fontWeight: 800, color: '#78350f' }}>
+                  ⚡ {t('productDetail.flashSaleTitle')}
+                </span>
+                <span style={{ fontSize: 22, fontWeight: 800, color: '#78350f' }}>
+                  {unitPrice.toFixed(2)} XLM
+                </span>
+                <span style={{ fontSize: 14, textDecoration: 'line-through', color: '#92400e', fontWeight: 500 }}>
+                  {baseUnitPrice.toFixed(2)} XLM
+                </span>
+                <span style={{
+                  background: '#ef4444',
+                  color: '#fff',
+                  borderRadius: 20,
+                  padding: '2px 10px',
+                  fontSize: 13,
+                  fontWeight: 700,
+                }}>
+                  {t('productDetail.flashSaleSavings', {
+                    pct: Math.round((1 - unitPrice / baseUnitPrice) * 100),
+                  })}
+                </span>
+              </div>
+              <FlashSaleCountdown endsAt={product.flash_sale_ends_at} />
+            </div>
+            {/* Price line below banner (no extra countdown — already shown in banner) */}
             <div style={s.price}>
               {unitPrice.toFixed(2)} XLM{' '}
               <span style={{ fontSize: 14, fontWeight: 400 }}>/ {product.unit}</span>
-              <span style={{ marginLeft: 8, fontSize: 13, textDecoration: 'line-through', color: '#888' }}>
-                {baseUnitPrice.toFixed(2)} XLM
-              </span>
             </div>
-            <div style={{ ...s.badge, background: '#fee2e2', color: '#b42318', fontWeight: 700, marginBottom: 8 }}>Flash Sale</div>
-            <FlashSaleCountdown endsAt={product.flash_sale_ends_at} />
           </>
         ) : (
           <div style={s.price}>

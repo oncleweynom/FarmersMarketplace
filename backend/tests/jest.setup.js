@@ -156,6 +156,19 @@ beforeEach(() => {
     balanceId: 'BALANCE_ID_001',
   });
   if (stellar.claimBalance) stellar.claimBalance.mockResolvedValue('CLAIM_TX_001');
+  stellar.createWallet?.mockReturnValue({ publicKey: 'GPUBKEY', secretKey: 'SSECRET' });
+  stellar.createWalletFromMnemonic?.mockReturnValue({ publicKey: 'GPUBKEY', secretKey: 'SSECRET', mnemonic: 'word '.repeat(12).trim() });
+  stellar.deriveKeypairFromMnemonic?.mockReturnValue({ publicKey: 'GPUBKEY', secretKey: 'SSECRET' });
+  stellar.getBalance?.mockResolvedValue(1000);
+  stellar.getTransactions?.mockResolvedValue({ records: [], next_cursor: null, prev_cursor: null });
+  stellar.fundTestnetAccount?.mockResolvedValue({});
+  stellar.sendPayment?.mockResolvedValue('TXHASH123');
+  stellar.isTestnet = true;
+  stellar.createClaimableBalance?.mockResolvedValue({
+    txHash: 'ESCROW_TX',
+    balanceId: 'BALANCE_ID_001',
+  });
+  stellar.claimBalance?.mockResolvedValue('CLAIM_TX_001');
   stellar.simulateContractCall = jest.fn();
   stellar.getContractWasmHash = jest.fn().mockResolvedValue('0'.repeat(64));
 
@@ -168,4 +181,8 @@ beforeEach(() => {
   if (mailer.sendAuctionSaleEmail) mailer.sendAuctionSaleEmail.mockResolvedValue({});
   if (mailer.sendAuctionNoSaleEmail) mailer.sendAuctionNoSaleEmail.mockResolvedValue({});
   if (mailer.sendSubscriptionPaymentFailedEmail) mailer.sendSubscriptionPaymentFailedEmail.mockResolvedValue({});
+  mailer.sendOrderEmails?.mockResolvedValue({});
+  mailer.sendLowStockAlert?.mockResolvedValue({});
+  mailer.sendStatusUpdateEmail?.mockResolvedValue({});
+  mailer.sendBackInStockEmail?.mockResolvedValue({});
 });
