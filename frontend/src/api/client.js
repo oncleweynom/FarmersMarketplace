@@ -78,6 +78,7 @@ async function request(path, options = {}, retry = true) {
       credentials: 'include',
       headers,
       body: isFormData ? options.body : options.body ? JSON.stringify(options.body) : undefined,
+      signal: options.signal,
     });
 
     if (res.status === 401 && retry) {
@@ -125,6 +126,7 @@ export const api = {
   createProduct: (body) => request('/products', { method: 'POST', body }),
   getMyProducts: () => request('/products/mine/list'),
   getHarvestBatches: () => request('/batches'),
+  getBatchesByFarmer: (farmerId) => request(`/batches?farmer_id=${farmerId}`),
   createHarvestBatch: (body) => request('/batches', { method: 'POST', body }),
   restockProduct: (id, quantity) => request(`/products/${id}/restock`, { method: 'PATCH', body: { quantity } }),
   deleteProduct: (id) => request(`/products/${id}`, { method: 'DELETE' }),
@@ -139,7 +141,7 @@ export const api = {
 
   // Price tiers
   getProductTiers: (id) => request(`/products/${id}/tiers`),
-  getPriceHistory: (id) => request(`/products/${id}/price-history`),
+  getPriceHistory: (id, range) => request(`/products/${id}/price-history${range ? `?range=${range}` : ''}`),
   updateProductTiers: (id, tiers) => request(`/products/${id}/tiers`, { method: 'POST', body: { tiers } }),
 
   uploadProductImage: (file) => {
@@ -267,6 +269,8 @@ export const api = {
     const qs = new URLSearchParams({ page });
     if (filters.search) qs.append('search', filters.search);
     if (filters.role) qs.append('role', filters.role);
+    if (filters.verified) qs.append('verified', filters.verified);
+    if (filters.banned) qs.append('banned', filters.banned);
     return request(`/admin/users?${qs}`);
   },
   adminGetOrders: (page = 1) => request(`/admin/orders?page=${page}`),
@@ -350,6 +354,8 @@ export const api = {
   getAuction: (id) => request(`/auctions/${id}`),
   createAuction: (body) => request('/auctions', { method: 'POST', body }),
   placeBid: (id, body) => request(`/auctions/${id}/bid`, { method: 'POST', body }),
+  getAuctionBids: (id) => request(`/auctions/${id}/bids`),
+  endAuction: (id) => request(`/auctions/${id}/end`, { method: 'PATCH' }),
 
   setFlashSale: (id, body) => request(`/products/${id}/flash-sale`, { method: 'PATCH', body }),
   cancelFlashSale: (id) => request(`/products/${id}/flash-sale`, { method: 'DELETE' }),

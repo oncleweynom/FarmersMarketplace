@@ -348,6 +348,8 @@ export default function Marketplace() {
   const debouncedSearch = useDebounce(filters.search, 300);
   const debouncedSeller = useDebounce(filters.seller, 300);
   const debouncedRadius = useDebounce(filters.radius, 400);
+  const debouncedSearch = useDebounce(filters.search, 400);
+  const debouncedSeller = useDebounce(filters.seller, 400);
 
   const abortRef = useRef(null);
   const sentinelRef = useRef(null);
@@ -751,7 +753,6 @@ export default function Marketplace() {
         </div>
       )}
 
-      <RecentlyCompared />
       <div style={s.filters}>
         <input
           style={s.input}
@@ -1315,5 +1316,6 @@ export default function Marketplace() {
         </div>
       )}
     </div>
+      <RecentlyCompared />
   );
 }
