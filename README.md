@@ -1,12 +1,14 @@
 # 🌿 Farmers Marketplace
 
+[![CI](https://github.com/techisigu/FarmersMarketplace/workflows/CI/badge.svg)](https://github.com/techisigu/FarmersMarketplace/actions)
+
 A minimal MVP marketplace where farmers list products and buyers pay using the **Stellar Network (XLM)**.
 
 ## Stack
 
 - Frontend: React + Vite
 - Backend: Node.js + Express
-- Database: SQLite (via better-sqlite3)
+- Database: SQLite (local dev, default) / PostgreSQL (production)
 - Payments: Stellar Testnet (XLM)
 
 ## Project Structure
@@ -74,25 +76,266 @@ Runs on http://localhost:3000
 
 ## API Endpoints
 
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| POST | /api/auth/register | — | Register user |
-| POST | /api/auth/login | — | Login |
-| GET | /api/products | — | Browse all products |
-| GET | /api/products/:id | — | Product detail |
-| POST | /api/products | farmer | Create listing |
-| GET | /api/products/mine/list | farmer | My listings |
-| DELETE | /api/products/:id | farmer | Remove listing |
-| POST | /api/orders | buyer | Place + pay order |
-| GET | /api/orders | buyer | Order history |
-| GET | /api/orders/sales | farmer | Incoming sales |
-| GET | /api/wallet | auth | Balance |
-| GET | /api/wallet/transactions | auth | TX history |
-| POST | /api/wallet/fund | auth | Fund via Friendbot (testnet) |
+Interactive API documentation is available at **[http://localhost:4000/api/docs](http://localhost:4000/api/docs)** when the backend is running.
+
+| Method | Path                                     | Auth   | Description                                                        |
+| ------ | ---------------------------------------- | ------ | ------------------------------------------------------------------ |
+| POST   | /api/auth/register                       | —      | Register user                                                      |
+| POST   | /api/auth/login                          | —      | Login                                                              |
+| GET    | /api/products                            | —      | Browse all products                                                |
+| GET    | /api/products/:id                        | —      | Product detail                                                     |
+| POST   | /api/products                            | farmer | Create listing                                                     |
+| GET    | /api/products/mine/list                  | farmer | My listings                                                        |
+| DELETE | /api/products/:id                        | farmer | Remove listing                                                     |
+| POST   | /api/orders                              | buyer  | Place + pay order                                                  |
+| GET    | /api/orders                              | buyer  | Order history                                                      |
+| GET    | /api/orders/sales                        | farmer | Incoming sales                                                     |
+| GET    | /api/wallet                              | auth   | Balance                                                            |
+| GET    | /api/wallet/transactions                 | auth   | TX history                                                         |
+| POST   | /api/wallet/fund                         | auth   | Fund via Friendbot (testnet)                                       |
+| GET    | /api/contracts/:contractId/state?prefix= | auth   | View Soroban contract storage entries (JSON: key, val, durability) |
+
+## Database Migrations
+
+Schema changes are managed through versioned SQL migration files in `backend/migrations/`.
+
+### Running migrations
+
+```bash
+cd backend
+npm run migrate           # apply all pending migrations
+npm run migrate:rollback  # revert the last applied migration
+```
+
+Migrations run automatically on app startup — no manual step needed for development.
+
+### How it works
+
+- Migration files: `backend/migrations/NNN_description.sql`
+- Rollback files:  `backend/migrations/NNN_description.undo.sql` (optional)
+- Applied migrations are tracked in a `migrations` table in the database
+- Running `migrate` twice is safe — already-applied migrations are skipped
+
+### Creating a new migration
+
+```bash
+# Up migration
+echo "ALTER TABLE products ADD COLUMN featured INTEGER DEFAULT 0;" \
+  > backend/migrations/002_add_featured.sql
+
+# Rollback (optional)
+echo "ALTER TABLE products DROP COLUMN IF EXISTS featured;" \
+  > backend/migrations/002_add_featured.undo.sql
+
+npm run migrate
+```
+
+## Database Backup and Restore
+
+The application includes automated database backup functionality to protect against data loss.
+
+### Manual Backup
+
+Create a timestamped backup of the database:
+
+```bash
+cd backend
+npm run backup
+```
+
+This creates a backup file in `backend/backups/` with format `market-YYYY-MM-DD.db`.
+
+### Manual Restore
+
+Restore the database from a backup file:
+
+```bash
+cd backend
+npm run restore -- backups/market-2024-01-01.db
+```
+
+**Important**: Before restoring, the current database is automatically backed up to `market.db.backup`.
+
+### Automated Daily Backups
+
+- Backups run automatically every day at midnight UTC
+- Only the last 7 backups are retained (older ones are automatically deleted)
+- Backup status and errors are logged using the structured logging system
+
+### Backup Location
+
+- Backup files are stored in: `backend/backups/`
+- File naming convention: `market-YYYY-MM-DD.db`
+- Maximum retention: 7 days
+
+### Recovery Procedures
+
+1. **Quick Restore**: Use `npm run restore` with the desired backup file
+2. **Emergency Recovery**: Copy `market.db.backup` (created before restore) back to `market.db`
+3. **Complete Reset**: Delete `market.db` and restart the application (fresh schema)
+
+## PostgreSQL Setup
+
+The backend supports both SQLite (local dev) and PostgreSQL (production), controlled by the `DATABASE_URL` environment variable.
+
+### Local development (SQLite — default)
+
+No extra setup needed. SQLite is used automatically when `DATABASE_URL` is not set.
+
+### Production (PostgreSQL)
+
+1. Add `DATABASE_URL` to your `.env`:
+   ```
+   DATABASE_URL=postgresql://user:password@localhost:5432/farmersmarketplace
+   ```
+2. The schema is created automatically on first start.
+
+### Docker Compose (PostgreSQL + backend + frontend)
+
+```bash
+cp backend/.env.example backend/.env
+# Edit backend/.env — set JWT_SECRET etc.
+docker compose up
+```
+
+This starts:
+- `postgres` — PostgreSQL 16 on port 5432
+- `backend`  — Express API on port 4000 (connected to postgres)
+- `frontend` — React app on port 3000
+
+### Migrate existing SQLite data to PostgreSQL
+
+```bash
+DATABASE_URL=postgresql://user:pass@host:5432/dbname \
+  node backend/scripts/migrate-sqlite-to-pg.js
+```
+
+## Contract Testing (Soroban)
+
+Test Soroban contracts against a local Stellar node using the built-in test harness.
+
+### Start the local node
+
+```bash
+docker-compose -f docker-compose.test.yml up -d
+```
+
+This starts a `stellar/quickstart` node on port 8000 with Soroban RPC enabled.
+
+### Run contract tests
+
+```bash
+cd backend
+npm run test:contracts
+```
+
+### Test helpers
+
+`backend/src/__tests__/helpers/soroban.js` exposes:
+
+- `fundAccount(publicKey)` — fund via local Friendbot
+- `deployContract(wasmBuffer, keypair)` — upload WASM and create contract instance
+- `invokeContract(contractId, method, args, keypair)` — call a contract function
+
+### Environment variables (optional)
+
+| Variable | Default | Description |
+|---|---|---|
+| `TEST_HORIZON_URL` | `http://localhost:8000` | Local Horizon endpoint |
+| `TEST_SOROBAN_RPC_URL` | `http://localhost:8000/soroban/rpc` | Local Soroban RPC |
+| `TEST_NETWORK_PASSPHRASE` | `Standalone Network ; February 2017` | Local network passphrase |
+| `SKIP_CONTRACT_TESTS` | `false` | Set to `true` to skip contract tests in CI without Docker |
+
+### SKIP_CONTRACT_TESTS
+
+Contract tests require a running local Stellar node (Docker). In CI environments where Docker is not available, set `SKIP_CONTRACT_TESTS=true` to skip the suite without failing the build:
+
+```bash
+SKIP_CONTRACT_TESTS=true npm run test:contracts
+```
+
+When skipped in CI, a warning is printed to the log so the omission is visible.
+
+A dedicated **nightly CI job** (`contract-tests-nightly` in `.github/workflows/ci.yml`) runs the full contract test suite on a schedule with Docker available, ensuring these tests are not silently broken.
+
+## Soroban Escrow Contract (`contract/`)
+
+The `contract/` directory contains a Soroban smart contract that provides on-chain escrow for marketplace orders.
+
+### Functions
+
+| Function | Description |
+|----------|-------------|
+| `deposit(order_id, buyer, farmer, amount, timeout_unix)` | Lock funds in escrow |
+| `release(order_id)` | Buyer releases funds to farmer |
+| `refund(order_id)` | Anyone refunds buyer after timeout |
+| `get_escrow(order_id)` | Read-only view of an escrow record |
+
+### Error Codes
+
+| Error | Meaning |
+|-------|---------|
+| `AlreadyExists` | Duplicate deposit for same order_id |
+| `NotFound` | No escrow record for order_id |
+| `Unauthorized` | Caller not permitted |
+| `NotTimedOut` | Refund called before timeout |
+| `AlreadySettled` | Escrow already released or refunded |
+| `InvalidParties` | buyer and farmer must be different addresses |
+
+### Build & Test
+
+```bash
+cd contract
+cargo test --features testutils
+cargo build --target wasm32-unknown-unknown --release
+```
+
+### Design Notes
+
+- **#468** — Every function that reads/writes an escrow entry calls `extend_ttl(TTL_MIN=100_000, TTL_MAX=200_000)` so entries never expire and lock funds.
+- **#469** — `deposit` rejects calls where `buyer == farmer` with `EscrowError::InvalidParties`.
+- **#470** — `deposit` panics if `timeout_unix` is not at least 1 hour (`3600 s`) in the future.
+- **#471** — `deposit`, `release`, and `refund` each emit a Soroban event so the backend can subscribe to the RPC event stream instead of polling.
+
+## i18n Translation Sync
+
+The project supports English (`en.json`) and Swahili (`sw.json`) via `react-i18next`. A CI script enforces key parity between the two locale files.
+
+### Running the sync check
+
+```bash
+cd frontend
+node scripts/check-i18n-sync.js
+```
+
+This script fails if `sw.json` is missing any keys present in `en.json`. It is also run as part of the test suite (`i18nSync.test.js`).
+
+### Adding new translations
+
+1. Add the English string to `src/i18n/en.json`.
+2. Add the corresponding Swahili translation to `src/i18n/sw.json`.
+3. Run `node scripts/check-i18n-sync.js` to verify parity.
+4. Run `npx vitest run src/test/i18nSync.test.js` to confirm the test passes.
+
+Missing Swahili translations will fall back to the English key string, showing raw translation keys to Swahili users. Always keep both locale files in sync.
 
 ## Notes
 
 - Stellar wallets are auto-created on registration
 - All payments use **XLM on Stellar Testnet** — no real money involved
-- SQLite database file (`market.db`) is created automatically on first run
-- To reset: delete `backend/market.db`
+- SQLite database file (`market.db`) is created automatically on first run (when `DATABASE_URL` is not set)
+- To reset SQLite: delete `backend/market.db`
+
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for full guidance on:
+
+- Local dev environment setup (Rust toolchain, Stellar CLI)
+- Build and test commands
+- Lint requirements (`cargo fmt`, `cargo clippy`, `cargo audit`)
+- Branch naming and Conventional Commit format
+- PR requirements and review process
+- Issue workflow and label guide
+
+For security vulnerabilities, follow the process in [SECURITY.md](./SECURITY.md) instead of opening a public issue.
+

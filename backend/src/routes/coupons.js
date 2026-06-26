@@ -2,113 +2,152 @@ const router = require('express').Router();
 const db = require('../db/schema');
 const auth = require('../middleware/auth');
 const { err } = require('../middleware/error');
+const logger = require('../logger');
 
-// Schema migrations for coupons feature
-db.exec(`
-  CREATE TABLE IF NOT EXISTS coupons (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    code TEXT UNIQUE NOT NULL,
-    discount_pct REAL NOT NULL CHECK(discount_pct > 0 AND discount_pct <= 100),
-    max_uses INTEGER NOT NULL DEFAULT 1,
-    max_uses_per_user INTEGER NOT NULL DEFAULT 1,
-    used_count INTEGER NOT NULL DEFAULT 0,
-    expires_at DATETIME,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+// Get the best matching tier price for a quantity, or base price if no tiers
+async function getTierPrice(productId, quantity) {
+  const { rows: tiers } = await db.query(
+    'SELECT min_quantity, price_per_unit FROM price_tiers WHERE product_id = $1 ORDER BY min_quantity DESC',
+    [productId]
   );
 
-  CREATE TABLE IF NOT EXISTS coupon_redemptions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    coupon_id INTEGER NOT NULL,
-    user_id INTEGER NOT NULL,
-    order_id INTEGER,
-    redeemed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (coupon_id) REFERENCES coupons(id),
-    FOREIGN KEY (user_id) REFERENCES users(id)
-  );
-`);
+  // Find the highest min_quantity that is <= quantity
+  for (const tier of tiers) {
+    if (quantity >= tier.min_quantity) {
+      logger.debug('[getTierPrice] Matched tier', { productId, quantity, min_quantity: tier.min_quantity, price_per_unit: tier.price_per_unit });
+      return tier.price_per_unit;
+    }
+  }
 
-// POST /api/coupons/validate - validate a coupon code for the requesting buyer
-router.post('/validate', auth, (req, res) => {
-  const { code } = req.body;
-  if (!code) return err(res, 400, 'Coupon code is required', 'validation_error');
+  // No tier matches, return base price
+  const { rows: productRows } = await db.query('SELECT price FROM products WHERE id = $1', [
+    productId,
+  ]);
+  logger.debug('[getTierPrice] No tier matched, using base price', { productId, quantity, base_price: productRows[0].price });
+  return productRows[0].price;
+}
 
-  const coupon = db.prepare('SELECT * FROM coupons WHERE code = ?').get(code);
-  if (!coupon) return err(res, 404, 'Coupon not found', 'coupon_not_found');
-
+// Resolve a coupon row and validate it against a farmer + total
+// userId is optional; when provided, per-user limit is enforced
+function resolveCoupon(code, farmerId, userId) {
+  const coupon = db.prepare('SELECT * FROM coupons WHERE code = ?').get(code.toUpperCase());
+  if (!coupon) return { error: 'Invalid coupon code', code: 'invalid_coupon' };
+  if (coupon.farmer_id !== farmerId)
+    return { error: 'Coupon not valid for this product', code: 'invalid_coupon' };
   if (coupon.expires_at && new Date(coupon.expires_at) < new Date())
-    return err(res, 400, 'Coupon has expired', 'coupon_expired');
-
-  if (coupon.used_count >= coupon.max_uses)
-    return err(res, 409, 'Coupon has reached its maximum uses', 'coupon_exhausted');
-
-  const userUses = db.prepare(
-    'SELECT COUNT(*) as count FROM coupon_redemptions WHERE coupon_id = ? AND user_id = ?'
-  ).get(coupon.id, req.user.id).count;
-
-  if (userUses >= coupon.max_uses_per_user)
-    return err(res, 409, 'You have already used this coupon the maximum number of times', 'coupon_user_limit_reached');
-
-  res.json({ success: true, data: { id: coupon.id, discount_pct: coupon.discount_pct } });
-});
-
-// POST /api/coupons/redeem - atomically redeem a coupon (call after order is created)
-router.post('/redeem', auth, (req, res) => {
-  const { code, order_id } = req.body;
-  if (!code || !order_id) return err(res, 400, 'code and order_id are required', 'validation_error');
-
-  const redeem = db.transaction(() => {
-    const coupon = db.prepare('SELECT * FROM coupons WHERE code = ?').get(code);
-    if (!coupon) throw { status: 404, message: 'Coupon not found', code: 'coupon_not_found' };
-
-    if (coupon.expires_at && new Date(coupon.expires_at) < new Date())
-      throw { status: 400, message: 'Coupon has expired', code: 'coupon_expired' };
-
-    const userUses = db.prepare(
-      'SELECT COUNT(*) as count FROM coupon_redemptions WHERE coupon_id = ? AND user_id = ?'
-    ).get(coupon.id, req.user.id).count;
-
-    if (userUses >= coupon.max_uses_per_user)
-      throw { status: 409, message: 'You have already used this coupon the maximum number of times', code: 'coupon_user_limit_reached' };
-
-    // Race-condition-safe increment: only succeeds if used_count < max_uses
-    const result = db.prepare(
-      'UPDATE coupons SET used_count = used_count + 1 WHERE id = ? AND used_count < max_uses'
-    ).run(coupon.id);
-
-    if (result.changes === 0)
-      throw { status: 409, message: 'Coupon has reached its maximum uses', code: 'coupon_exhausted' };
-
-    db.prepare(
-      'INSERT INTO coupon_redemptions (coupon_id, user_id, order_id) VALUES (?, ?, ?)'
-    ).run(coupon.id, req.user.id, order_id);
-
-    return { discount_pct: coupon.discount_pct };
-  });
-
-  try {
-    const result = redeem();
-    res.json({ success: true, data: result });
-  } catch (e) {
-    if (e.status) return err(res, e.status, e.message, e.code);
-    throw e;
+    return { error: 'Coupon has expired', code: 'coupon_expired' };
+  if (coupon.max_uses !== null && coupon.used_count >= coupon.max_uses)
+    return { error: 'Coupon usage limit reached', code: 'coupon_exhausted' };
+  if (userId != null && coupon.max_uses_per_user != null) {
+    const uses = db
+      .prepare('SELECT COUNT(*) as cnt FROM coupon_uses WHERE coupon_id = ? AND user_id = ?')
+      .get(coupon.id, userId);
+    if (uses.cnt >= coupon.max_uses_per_user)
+      return { error: 'Coupon already used', code: 'coupon_already_used' };
   }
-});
+  return { coupon };
+}
 
-// POST /api/coupons - admin create coupon
+function calcDiscount(coupon, subtotal) {
+  if (coupon.discount_type === 'percent') {
+    return Math.min(parseFloat(((subtotal * coupon.discount_value) / 100).toFixed(7)), subtotal);
+  }
+  return Math.min(coupon.discount_value, subtotal);
+}
+
+// POST /api/coupons — farmer creates a coupon
 router.post('/', auth, (req, res) => {
-  if (req.user.role !== 'admin') return err(res, 403, 'Admins only', 'forbidden');
-  const { code, discount_pct, max_uses = 1, max_uses_per_user = 1, expires_at } = req.body;
-  if (!code || !discount_pct) return err(res, 400, 'code and discount_pct are required', 'validation_error');
+  if (req.user.role !== 'farmer')
+    return err(res, 403, 'Only farmers can create coupons', 'forbidden');
+
+  const { code, discount_type, discount_value, max_uses, expires_at } = req.body;
+  if (!code || !discount_type || !discount_value)
+    return err(
+      res,
+      400,
+      'code, discount_type, and discount_value are required',
+      'validation_error'
+    );
+  if (!['percent', 'fixed'].includes(discount_type))
+    return err(res, 400, 'discount_type must be percent or fixed', 'validation_error');
+  const value = parseFloat(discount_value);
+  if (isNaN(value) || value <= 0)
+    return err(res, 400, 'discount_value must be a positive number', 'validation_error');
+  if (discount_type === 'percent' && value > 100)
+    return err(res, 400, 'Percent discount cannot exceed 100', 'validation_error');
 
   try {
-    const result = db.prepare(
-      'INSERT INTO coupons (code, discount_pct, max_uses, max_uses_per_user, expires_at) VALUES (?, ?, ?, ?, ?)'
-    ).run(code.toUpperCase(), discount_pct, max_uses, max_uses_per_user, expires_at || null);
-    res.status(201).json({ success: true, id: result.lastInsertRowid });
+    const result = db
+      .prepare(
+        'INSERT INTO coupons (farmer_id, code, discount_type, discount_value, max_uses, expires_at) VALUES (?, ?, ?, ?, ?, ?)'
+      )
+      .run(
+        req.user.id,
+        code.toUpperCase(),
+        discount_type,
+        value,
+        max_uses || null,
+        expires_at || null
+      );
+    res.json({ success: true, id: result.lastInsertRowid, code: code.toUpperCase() });
   } catch (e) {
-    if (e.message.includes('UNIQUE')) return err(res, 409, 'Coupon code already exists', 'code_taken');
+    if (e.message.includes('UNIQUE'))
+      return err(res, 409, 'Coupon code already exists', 'conflict');
     throw e;
   }
+});
+
+// GET /api/coupons — farmer lists their own coupons
+router.get('/', auth, (req, res) => {
+  if (req.user.role !== 'farmer') return err(res, 403, 'Farmers only', 'forbidden');
+  const coupons = db
+    .prepare('SELECT * FROM coupons WHERE farmer_id = ? ORDER BY created_at DESC')
+    .all(req.user.id);
+  res.json({ success: true, data: coupons });
+});
+
+// DELETE /api/coupons/:id — farmer deletes own coupon
+router.delete('/:id', auth, (req, res) => {
+  if (req.user.role !== 'farmer') return err(res, 403, 'Farmers only', 'forbidden');
+  const coupon = db
+    .prepare('SELECT * FROM coupons WHERE id = ? AND farmer_id = ?')
+    .get(req.params.id, req.user.id);
+  if (!coupon) return err(res, 404, 'Coupon not found', 'not_found');
+  db.prepare('DELETE FROM coupons WHERE id = ?').run(req.params.id);
+  res.json({ success: true });
+});
+
+// POST /api/coupons/validate — buyer checks a coupon for a product
+router.post('/validate', auth, async (req, res) => {
+  const { code, product_id } = req.body;
+  if (!code || !product_id)
+    return err(res, 400, 'code and product_id are required', 'validation_error');
+
+  const { rows: prodRows } = await db.query(
+    'SELECT id, price, farmer_id FROM products WHERE id = $1',
+    [product_id]
+  );
+  const product = prodRows[0];
+  if (!product) return err(res, 404, 'Product not found', 'not_found');
+
+  const quantity = parseInt(req.body.quantity) || 1;
+  const unitPrice = await getTierPrice(product_id, quantity);
+  const subtotal = unitPrice * quantity;
+
+  const { coupon, error, code: errCode } = resolveCoupon(code, product.farmer_id, req.user.id);
+  if (error) return err(res, errCode === 'coupon_already_used' ? 409 : 400, error, errCode);
+
+  const discount = calcDiscount(coupon, subtotal);
+  res.json({
+    success: true,
+    discount_type: coupon.discount_type,
+    discount_value: coupon.discount_value,
+    discount,
+    final_total: parseFloat((subtotal - discount).toFixed(7)),
+  });
 });
 
 module.exports = router;
+module.exports.resolveCoupon = resolveCoupon;
+module.exports.calcDiscount = calcDiscount;
+module.exports.getTierPrice = getTierPrice;
