@@ -1,4 +1,6 @@
 require('./config'); // validate env vars before anything else
+const { validateStellarConfig } = require('./utils/stellar-config');
+validateStellarConfig(); // fail fast on missing Stellar/Soroban config
 const app = require('./app');
 const logger = require('./logger');
 const cron = require('node-cron');
