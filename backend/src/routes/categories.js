@@ -83,6 +83,11 @@ router.delete('/admin/categories/:id', auth, (req, res) => {
 
   db.prepare('DELETE FROM categories WHERE id = ?').run(req.params.id);
   res.json({ success: true, message: 'Category deleted' });
+const db = require('../db/postgres');
+
+router.get('/', async (req, res) => {
+  const result = await db.query('SELECT * FROM categories ORDER BY name');
+  res.json(result.rows);
 });
 
 module.exports = router;
