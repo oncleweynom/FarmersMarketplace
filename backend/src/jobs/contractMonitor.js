@@ -1,88 +1,245 @@
 /**
- * jobs/contractMonitor.js
+ * jobs/contractMonitor.js — Issue #862
  *
- * Watches Soroban contract invocations on the Stellar network and stores them in the
- * contract_invocations table (migration 013_contract_invocations.sql).
- * Handles the args size limit introduced in migration 019_contract_invocations_args_limit.sql.
+ * Subscribes to Soroban contract events for the configured escrow contract and
+ * updates order records in the database based on the event type:
  *
- * Features:
- * - Truncates invocation args to the args_limit bytes defined in migration 019
- * - Uses ON CONFLICT (tx_hash, invocation_index) DO NOTHING for idempotency
- * - Horizon stream reconnection with exponential backoff (max 60s)
- * - GET /api/contracts/:contractId/invocations returns recent invocations from DB, paginated
+ *   deposit  → orders.escrow_status = 'active'
+ *   release  → orders.escrow_status = 'released', orders.status = 'paid', notify buyer
+ *   refund   → orders.escrow_status = 'refunded', notify buyer
+ *   dispute  → orders.escrow_status = 'disputed'
+ *
+ * Resume behaviour:
+ *   The last processed ledger is persisted in `escrow_monitor_cursor`.
+ *   On restart the monitor resumes polling from that ledger + 1 so no events
+ *   are re-processed or skipped.
+ *
+ * Retry:
+ *   Exponential backoff up to MAX_BACKOFF_MS (60 s) on RPC failures.
+ *   After MAX_RETRIES consecutive failures an admin alert email is sent.
  */
+
+'use strict';
 
 const db = require('../db/schema');
 const { getContractEvents } = require('../utils/stellar');
+const { sendStatusUpdateEmail } = require('../utils/mailer');
+const { sendPushToUser } = require('../utils/pushNotifications');
 const logger = require('../logger');
+const config = require('../config');
 
 const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_RETRIES = 5;
-const MAX_BACKOFF_MS = 60 * 1000; // 60 seconds
-const ARGS_MAX_BYTES = 65535; // From migration 019
+const MAX_BACKOFF_MS = 60 * 1000; // 60 s
+const ARGS_MAX_BYTES = 65535;
 
-/**
- * Truncates args JSON to the maximum allowed byte length.
- * If args is null or already within limit, returns as-is.
- * Otherwise truncates and appends "... (truncated)" marker.
- */
+// ── helpers ──────────────────────────────────────────────────────────────────
+
 function truncateArgs(args) {
   if (args == null) return null;
   const json = JSON.stringify(args);
   if (Buffer.byteLength(json, 'utf8') <= ARGS_MAX_BYTES) return json;
-  
-  // Truncate to fit within limit with marker
   const marker = '... (truncated)';
-  const maxJsonBytes = ARGS_MAX_BYTES - Buffer.byteLength(marker, 'utf8');
-  let truncated = json;
-  while (Buffer.byteLength(truncated, 'utf8') > maxJsonBytes && truncated.length > 0) {
-    truncated = truncated.slice(0, -1);
-  }
-  return truncated + marker;
+  const limit = ARGS_MAX_BYTES - Buffer.byteLength(marker, 'utf8');
+  let t = json;
+  while (Buffer.byteLength(t, 'utf8') > limit) t = t.slice(0, -1);
+  return t + marker;
 }
 
-/**
- * Stores a contract invocation in the database with idempotency.
- * Uses ON CONFLICT to prevent duplicate inserts on replay.
- */
 async function storeInvocation({ contractId, method, args, txHash, invocationIndex, success, error }) {
   try {
     const truncatedArgs = truncateArgs(args);
     await db.query(
-      `INSERT INTO contract_invocations 
+      `INSERT INTO contract_invocations
          (contract_id, method, args, tx_hash, invocation_index, success, error, invoked_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, datetime('now'))
+       VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)
        ON CONFLICT (tx_hash, invocation_index) DO NOTHING`,
-      [
-        contractId,
-        method,
-        truncatedArgs,
-        txHash || null,
-        invocationIndex,
-        success ? 1 : 0,
-        error || null,
-      ]
+      [contractId, method, truncatedArgs, txHash || null, invocationIndex, success ? 1 : 0, error || null]
     );
   } catch (err) {
     logger.error('[ContractMonitor] Failed to store invocation:', err.message);
   }
 }
 
+// ── cursor persistence ────────────────────────────────────────────────────────
+
+async function getLastLedger(contractId) {
+  try {
+    const { rows } = await db.query(
+      `SELECT last_ledger FROM escrow_monitor_cursor WHERE contract_id = $1`,
+      [contractId]
+    );
+    return rows[0] ? Number(rows[0].last_ledger) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function saveLastLedger(contractId, ledger) {
+  try {
+    await db.query(
+      `INSERT INTO escrow_monitor_cursor (contract_id, last_ledger, updated_at)
+       VALUES ($1, $2, CURRENT_TIMESTAMP)
+       ON CONFLICT (contract_id) DO UPDATE
+         SET last_ledger = EXCLUDED.last_ledger,
+             updated_at  = CURRENT_TIMESTAMP`,
+      [contractId, ledger]
+    );
+  } catch (err) {
+    logger.warn('[ContractMonitor] Could not persist cursor:', err.message);
+  }
+}
+
+// ── event handlers ────────────────────────────────────────────────────────────
+
 /**
- * Monitors a single contract for invocations with exponential backoff retry.
+ * Extracts the numeric order_id from the event topics array.
+ * Escrow events use topic[2] as the order_id (e.g. ["escrow","deposit",<order_id>]).
  */
+function extractOrderId(topics) {
+  const raw = topics[2];
+  if (raw == null) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+async function handleDeposit(contractId, topics, data, txHash) {
+  const orderId = extractOrderId(topics);
+  if (!orderId) return;
+
+  logger.info(`[ContractMonitor] deposit event — order #${orderId}`);
+
+  await db.query(
+    `UPDATE orders SET escrow_status = 'active' WHERE id = $1`,
+    [orderId]
+  ).catch((e) => logger.error('[ContractMonitor] deposit DB update failed:', e.message));
+
+  await storeInvocation({ contractId, method: 'deposit', args: data, txHash, invocationIndex: 0, success: true, error: null });
+}
+
+async function handleRelease(contractId, topics, data, txHash) {
+  const orderId = extractOrderId(topics);
+  if (!orderId) return;
+
+  logger.info(`[ContractMonitor] release event — order #${orderId}`);
+
+  await db.query(
+    `UPDATE orders SET escrow_status = 'released', status = 'paid' WHERE id = $1`,
+    [orderId]
+  ).catch((e) => logger.error('[ContractMonitor] release DB update failed:', e.message));
+
+  // Notify buyer
+  try {
+    const { rows } = await db.query(
+      `SELECT o.id, o.total_price, u.email, u.name, p.name AS product_name
+       FROM orders o
+       JOIN users u ON u.id = o.buyer_id
+       JOIN products p ON p.id = o.product_id
+       WHERE o.id = $1`,
+      [orderId]
+    );
+    if (rows[0]) {
+      const order = rows[0];
+      await sendStatusUpdateEmail({ order, newStatus: 'paid', recipientEmail: order.email, recipientName: order.name })
+        .catch((e) => logger.warn('[ContractMonitor] release email failed (non-fatal):', e.message));
+      await sendPushToUser(order.buyer_id, {
+        title: 'Payment Released',
+        body: `Your escrow for order #${orderId} has been released.`,
+      }).catch(() => {});
+    }
+  } catch (e) {
+    logger.warn('[ContractMonitor] release notification failed (non-fatal):', e.message);
+  }
+
+  await storeInvocation({ contractId, method: 'release', args: data, txHash, invocationIndex: 0, success: true, error: null });
+}
+
+async function handleRefund(contractId, topics, data, txHash) {
+  const orderId = extractOrderId(topics);
+  if (!orderId) return;
+
+  logger.info(`[ContractMonitor] refund event — order #${orderId}`);
+
+  await db.query(
+    `UPDATE orders SET escrow_status = 'refunded' WHERE id = $1`,
+    [orderId]
+  ).catch((e) => logger.error('[ContractMonitor] refund DB update failed:', e.message));
+
+  // Notify buyer
+  try {
+    const { rows } = await db.query(
+      `SELECT o.id, o.total_price, u.email, u.name, u.id AS buyer_id
+       FROM orders o
+       JOIN users u ON u.id = o.buyer_id
+       WHERE o.id = $1`,
+      [orderId]
+    );
+    if (rows[0]) {
+      const order = rows[0];
+      await sendStatusUpdateEmail({ order, newStatus: 'refunded', recipientEmail: order.email, recipientName: order.name })
+        .catch((e) => logger.warn('[ContractMonitor] refund email failed (non-fatal):', e.message));
+      await sendPushToUser(order.buyer_id, {
+        title: 'Escrow Refunded',
+        body: `Your escrow for order #${orderId} has been refunded.`,
+      }).catch(() => {});
+    }
+  } catch (e) {
+    logger.warn('[ContractMonitor] refund notification failed (non-fatal):', e.message);
+  }
+
+  await storeInvocation({ contractId, method: 'refund', args: data, txHash, invocationIndex: 0, success: true, error: null });
+}
+
+async function handleDispute(contractId, topics, data, txHash) {
+  const orderId = extractOrderId(topics);
+  if (!orderId) return;
+
+  logger.info(`[ContractMonitor] dispute event — order #${orderId}`);
+
+  await db.query(
+    `UPDATE orders SET escrow_status = 'disputed' WHERE id = $1`,
+    [orderId]
+  ).catch((e) => logger.error('[ContractMonitor] dispute DB update failed:', e.message));
+
+  await storeInvocation({ contractId, method: 'dispute', args: data, txHash, invocationIndex: 0, success: true, error: null });
+}
+
+// ── dispatch ──────────────────────────────────────────────────────────────────
+
+async function dispatchEvent(contractId, ev) {
+  const topics = ev.topics || [];
+  // Escrow events use topic[0] = 'escrow', topic[1] = action
+  if (String(topics[0]) !== 'escrow') return;
+  const action = String(topics[1] || '');
+  const txHash = ev.id || null;
+
+  switch (action) {
+    case 'deposit': return handleDeposit(contractId, topics, ev.data, txHash);
+    case 'release': return handleRelease(contractId, topics, ev.data, txHash);
+    case 'refund':  return handleRefund(contractId, topics, ev.data, txHash);
+    case 'dispute': return handleDispute(contractId, topics, ev.data, txHash);
+    default:
+      // Store other events without DB side-effects
+      await storeInvocation({ contractId, method: action || 'unknown', args: ev.data, txHash, invocationIndex: 0, success: true, error: null });
+  }
+}
+
+// ── monitor loop ──────────────────────────────────────────────────────────────
+
 async function monitorContract(contractId, retryCount = 0) {
-  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const lastLedger = await getLastLedger(contractId);
+
+  // Build filter: resume from last processed ledger + 1, or fall back to 1 h ago
+  const filters = lastLedger > 0
+    ? { fromLedger: lastLedger + 1, limit: 200 }
+    : { from: new Date(Date.now() - 60 * 60 * 1000).toISOString(), limit: 200 };
 
   let result;
   try {
-    result = await getContractEvents(contractId, { from: oneHourAgo, limit: 200 });
+    result = await getContractEvents(contractId, filters);
   } catch (err) {
     if (retryCount < MAX_RETRIES) {
-      const backoffMs = Math.min(
-        Math.pow(2, retryCount) * 1000,
-        MAX_BACKOFF_MS
-      );
+      const backoffMs = Math.min(Math.pow(2, retryCount) * 1000, MAX_BACKOFF_MS);
       logger.warn(
         `[ContractMonitor] Failed to fetch events for ${contractId}, retrying in ${backoffMs}ms (attempt ${retryCount + 1}/${MAX_RETRIES}):`,
         err.message
@@ -91,45 +248,55 @@ async function monitorContract(contractId, retryCount = 0) {
       return monitorContract(contractId, retryCount + 1);
     }
 
-    logger.error(
-      `[ContractMonitor] Failed to fetch events for ${contractId} after ${MAX_RETRIES} retries:`,
-      err.message
-    );
+    logger.error(`[ContractMonitor] Failed to fetch events for ${contractId} after ${MAX_RETRIES} retries:`, err.message);
+
+    // Send admin alert (non-fatal)
+    try {
+      const { rows: admins } = await db.query(`SELECT email FROM users WHERE role = 'admin' LIMIT 1`);
+      if (admins[0]) {
+        const { sendContractAlert } = require('../utils/mailer');
+        await sendContractAlert({
+          to: admins[0].email,
+          alert: { alert_type: 'monitor_failure', contract_id: contractId, message: err.message },
+        }).catch(() => {});
+      }
+    } catch { /* non-fatal */ }
     return;
   }
 
   const events = result.events || [];
-  let invocationIndex = 0;
+  let highestLedger = lastLedger;
 
   for (const ev of events) {
-    // Extract method name from topics if available
-    const topics = ev.topics || [];
-    const method = topics[0] ? String(topics[0]) : 'unknown';
-    
-    // Determine success based on event type and topics
-    const isFailure = topics.some((t) => typeof t === 'string' && /fail|error|revert/i.test(t)) || ev.type === 'diagnostic';
-    
-    await storeInvocation({
-      contractId,
-      method,
-      args: ev.data || null,
-      txHash: ev.id || null,
-      invocationIndex: invocationIndex++,
-      success: !isFailure,
-      error: isFailure ? 'Contract invocation failed' : null,
-    });
+    await dispatchEvent(contractId, ev);
+    if (ev.ledger && Number(ev.ledger) > highestLedger) {
+      highestLedger = Number(ev.ledger);
+    }
+  }
+
+  // Persist cursor only when we actually advanced
+  if (highestLedger > lastLedger) {
+    await saveLastLedger(contractId, highestLedger);
   }
 }
 
 async function runMonitoringJob() {
+  // Use the configured escrow contract if no registry is available
+  const escrowContractId = config.sorobanEscrowContractId;
+
+  let contracts = [];
   try {
-    const { rows: contracts } = await db.query(
-      `SELECT contract_id FROM contracts_registry`
-    );
-    await Promise.all(contracts.map((c) => monitorContract(c.contract_id)));
-  } catch (err) {
-    logger.error('[ContractMonitor] Job error:', err.message);
+    const { rows } = await db.query(`SELECT contract_id FROM contracts_registry`);
+    contracts = rows;
+  } catch {
+    // table may not exist in all envs — fall back to config
   }
+
+  if (escrowContractId && !contracts.some((c) => c.contract_id === escrowContractId)) {
+    contracts.push({ contract_id: escrowContractId });
+  }
+
+  await Promise.all(contracts.map((c) => monitorContract(c.contract_id)));
 }
 
 function startContractMonitor() {
@@ -138,4 +305,10 @@ function startContractMonitor() {
   return setInterval(runMonitoringJob, POLL_INTERVAL_MS);
 }
 
-module.exports = { startContractMonitor, runMonitoringJob };
+module.exports = {
+  startContractMonitor,
+  runMonitoringJob,
+  // exported for testing
+  _handlers: { handleDeposit, handleRelease, handleRefund, handleDispute, dispatchEvent },
+  _cursor: { getLastLedger, saveLastLedger },
+};
