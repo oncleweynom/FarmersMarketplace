@@ -1,56 +1,65 @@
-/**
- * GDPR anonymization job.
- *
- * Scrubs PII from users who have been deactivated for more than 30 days
- * and have not yet been anonymized.
- *
- * Fields scrubbed:
- *   email            → anon_{id}@deleted.local
- *   name             → Deleted User
- *   phone            → NULL  (column may not exist on older DBs — silently skipped)
- *   stellar_public_key → NULL
- *   stellar_secret_key → NULL  (stored as seed_phrase in spec; column named stellar_secret_key here)
- *   address_book     → rows deleted entirely
- *   anonymized_at    → NOW()
- *
- * Order records retain financial data (total_price, product_id, stellar_tx_hash)
- * and referential integrity (buyer_id) but the user row itself is anonymized above.
- */
+'use strict';
 
+const cron = require('node-cron');
 const db = require('../db/schema');
+const logger = require('../logger');
 
-function anonymizeUser(userId) {
-  db.prepare(`
-    UPDATE users
-    SET email              = 'anon_' || id || '@deleted.local',
-        name               = 'Deleted User',
-        stellar_public_key = NULL,
-        stellar_secret_key = NULL,
-        anonymized_at      = CURRENT_TIMESTAMP
-    WHERE id = ?
-  `).run(userId);
+const THIRTY_DAYS_AGO = db.isPostgres
+  ? `NOW() - INTERVAL '30 days'`
+  : `datetime('now', '-30 days')`;
 
-  db.prepare('DELETE FROM address_book WHERE user_id = ?').run(userId);
-}
+/**
+ * Anonymize PII for users deactivated more than 30 days ago (GDPR).
+ * Idempotent: skips rows already anonymized (email matches the anonymized pattern).
+ *
+ * @returns {Promise<{anonymized: number, errors: number}>}
+ */
+async function anonymizeDeactivatedUsers() {
+  logger.info('[anonymize-job] Starting PII anonymization for deactivated users');
 
-function run() {
-  const users = db.prepare(`
-    SELECT id FROM users
-    WHERE deactivated_at IS NOT NULL
-      AND deactivated_at < datetime('now', '-30 days')
-      AND anonymized_at IS NULL
-  `).all();
+  const { rows } = await db.query(
+    `SELECT id FROM users
+     WHERE deactivated_at IS NOT NULL
+       AND deactivated_at <= ${THIRTY_DAYS_AGO}
+       AND email NOT LIKE 'deleted-%@anonymized.invalid'`,
+    []
+  );
 
-  for (const { id } of users) {
+  let anonymized = 0;
+  let errors = 0;
+
+  for (const { id } of rows) {
     try {
-      anonymizeUser(id);
-      console.log(`[GDPR] Anonymized user ${id}`);
-    } catch (err) {
-      console.error(`[GDPR] Failed to anonymize user ${id}:`, err.message);
+      await db.query(
+        `UPDATE users SET
+           name = $1,
+           email = $2,
+           password = $3,
+           stellar_public_key = NULL,
+           stellar_secret_key = NULL,
+           stellar_mnemonic = NULL,
+           bio = NULL,
+           location = NULL,
+           avatar_url = NULL,
+           anonymized_at = CURRENT_TIMESTAMP
+         WHERE id = $4`,
+        [`Deleted User`, `deleted-${id}@anonymized.invalid`, '[anonymized]', id]
+      );
+      anonymized++;
+    } catch (e) {
+      errors++;
+      logger.error('[anonymize-job] Failed to anonymize user', { userId: id, error: e.message });
     }
   }
 
-  return users.length;
+  logger.info('[anonymize-job] Done', { anonymized, errors });
+  return { anonymized, errors };
 }
 
-module.exports = { run, anonymizeUser };
+function startAnonymizeJob() {
+  // Run daily at 03:00 UTC
+  cron.schedule('0 3 * * *', anonymizeDeactivatedUsers, { scheduled: true, timezone: 'UTC' });
+  logger.info('[anonymize-job] Scheduled daily at 03:00 UTC');
+}
+
+module.exports = { anonymizeDeactivatedUsers, startAnonymizeJob };

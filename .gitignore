@@ -2,3 +2,31 @@ node_modules/
 *.db
 .env
 dist/
+
+# Nested repo clone (accidental duplicate)
+FarmersMarketplace/
+
+# Playwright
+frontend/playwright-report/
+frontend/test-results/
+frontend/.playwright/
+
+# Rust
+contract/target/
+contract/Cargo.lock
+contracts/target/
+contracts/Cargo.lock
+contracts/escrow/target/
+# Soroban test snapshot artifacts (written by `cargo test`)
+**/test_snapshots/
+# Test artifacts
+coverage/
+**/__snapshots__/
+**/*.snap
+backend/src/__tests__/tmp/
+
+#log
+
+# Developer notes
+vrickish.md
+somzilla.md
